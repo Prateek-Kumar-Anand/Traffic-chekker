@@ -1,0 +1,143 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <!--
+    Content Security Policy: only this site's own scripts and styles run, nothing can be
+    framed or posted elsewhere, and the page may talk only to the Traffic Checker backend.
+    The placeholder in connect-src is replaced with the backend's origin by scripts/build-site.mjs.
+    (GitHub Pages cannot send HTTP headers, so the policy is delivered as a meta tag.)
+  -->
+  <meta http-equiv="Content-Security-Policy" content="default-src 'none'; script-src 'self'; style-src 'self'; img-src 'self'; connect-src __API_BASE__; base-uri 'none'; form-action 'none'; object-src 'none'">
+  <meta name="referrer" content="no-referrer">
+  <title>Traffic Checker</title>
+  <meta name="description" content="Live traffic between two places: drive time right now, the delay caused by the jam, and the time once it clears.">
+  <link rel="stylesheet" href="style.css">
+</head>
+<body>
+  <header class="top">
+    <div class="wrap">
+      <h1>Traffic Checker</h1>
+      <p class="sub">Enter two places. See how bad the jam is, how long the drive takes now, and how long it takes once the jam clears.</p>
+    </div>
+  </header>
+
+  <main class="wrap">
+
+    <section class="card">
+      <form id="search" autocomplete="off" novalidate>
+        <div class="places">
+          <label class="field">
+            <span>From</span>
+            <div class="with-btn">
+              <input id="from" type="text" list="places" maxlength="200" placeholder="e.g. Charbagh Railway Station, Lucknow" required>
+              <button type="button" id="locate" class="icon" title="Use my current location" aria-label="Use my current location">&#9737;</button>
+            </div>
+          </label>
+          <button type="button" id="swap" class="icon swap" title="Swap places" aria-label="Swap places">&#8645;</button>
+          <label class="field">
+            <span>To</span>
+            <input id="to" type="text" list="places" maxlength="200" placeholder="e.g. Amausi Airport" required>
+          </label>
+        </div>
+        <datalist id="places"></datalist>
+
+        <div class="options">
+          <label class="field small">
+            <span>Leave</span>
+            <select id="when">
+              <option value="now">Now</option>
+              <option value="custom">At a set time</option>
+            </select>
+          </label>
+          <label class="field small" id="when-wrap" hidden>
+            <span>Date &amp; time</span>
+            <input id="when-time" type="datetime-local">
+          </label>
+          <label class="check"><input id="auto" type="checkbox"> Auto-refresh every 5 min</label>
+          <button type="submit" id="go" class="primary">Check traffic</button>
+        </div>
+      </form>
+      <p id="error" class="error" role="alert" hidden></p>
+    </section>
+
+    <section id="results" hidden>
+      <div class="card status">
+        <div class="status-head">
+          <span id="level-badge" class="badge">-</span>
+          <span id="level-note" class="muted"></span>
+        </div>
+        <div class="meter" aria-hidden="true"><div id="meter-fill"></div></div>
+        <p class="meter-caption"><span id="delay-pct"></span></p>
+      </div>
+
+      <div class="stats">
+        <div class="card stat">
+          <span class="label">Time right now (with traffic)</span>
+          <strong id="stat-now">-</strong>
+          <span class="muted" id="eta"></span>
+        </div>
+        <div class="card stat">
+          <span class="label">Time after the jam clears</span>
+          <strong id="stat-free">-</strong>
+          <span class="muted">Free-flow, no traffic</span>
+        </div>
+        <div class="card stat">
+          <span class="label">Extra time lost to the jam</span>
+          <strong id="stat-delay">-</strong>
+          <span class="muted" id="dist"></span>
+        </div>
+      </div>
+
+      <div class="card map-card">
+        <div class="map-head">
+          <h2>Route</h2>
+          <a id="open-gmaps" class="link-btn" href="#" target="_blank" rel="noopener noreferrer" hidden>Open in Google Maps</a>
+        </div>
+        <div id="map"></div>
+        <ul class="legend" aria-label="Traffic colour legend">
+          <li><i class="k0"></i>Flowing</li>
+          <li><i class="k1"></i>Slow</li>
+          <li><i class="k2"></i>Jam</li>
+        </ul>
+        <p class="muted small-print">Schematic route drawing, coloured by live traffic. Use the button above for the full street map.</p>
+      </div>
+    </section>
+
+    <section id="routes-card" class="card" hidden>
+      <h2>Routes</h2>
+      <p class="muted">Tap a route to see it above.</p>
+      <ul id="route-list" class="route-list"></ul>
+    </section>
+
+    <section id="forecast-card" class="card" hidden>
+      <h2>When does the jam clear?</h2>
+      <p id="forecast-summary" class="forecast-summary"></p>
+      <div id="forecast" class="forecast" role="list" tabindex="0" aria-label="Forecast drive times"></div>
+      <p class="muted small-print">Later times are Google's predictions based on typical traffic patterns. They are estimates, not guarantees.</p>
+    </section>
+
+    <section class="card" id="mine-card">
+      <div class="map-head">
+        <h2>Your routes</h2>
+        <button type="button" id="save-route" disabled>Save this route</button>
+      </div>
+      <p class="muted">Recent and saved routes are kept only in this browser. They are never sent to or stored on the server.</p>
+      <h3 class="h3">Saved</h3>
+      <ul id="saved-list" class="chips"></ul>
+      <h3 class="h3">Recent</h3>
+      <ul id="recent-list" class="chips"></ul>
+      <p><button type="button" id="clear-data" class="linkish">Clear my saved data</button></p>
+    </section>
+
+  </main>
+
+  <footer class="wrap foot">
+    <p>Traffic data and routing by Google Maps Platform. Not affiliated with Google. Estimates only; drive safely.</p>
+  </footer>
+
+  <script src="config.js"></script>
+  <script src="app.js"></script>
+</body>
+</html>

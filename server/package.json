@@ -1,0 +1,17 @@
+{
+  "name": "traffic-checker-server",
+  "version": "1.0.0",
+  "description": "Hardened backend for Traffic Checker: keeps the Google key server-side, validates input, rate-limits, caps spend, caches in MongoDB.",
+  "private": true,
+  "type": "module",
+  "engines": {
+    "node": ">=22"
+  },
+  "scripts": {
+    "start": "node src/index.js",
+    "test": "node --test \"test/*.test.js\""
+  },
+  "dependencies": {
+    "mongodb": "^6.10.0"
+  }
+}
