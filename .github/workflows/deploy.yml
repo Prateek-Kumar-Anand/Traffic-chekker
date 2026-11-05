@@ -36,7 +36,7 @@ jobs:
             echo "::warning::No GOOGLE_MAPS_API_KEY secret set. The site will ask visitors for their own key."
           fi
 
-      - uses: actions/configure-pages@v5
+      - uses: actions/configure-pages@v6
 
       - uses: actions/upload-pages-artifact@v3
         with:
