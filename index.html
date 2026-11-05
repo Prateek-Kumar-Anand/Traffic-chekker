@@ -1,0 +1,132 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Traffic Checker</title>
+  <meta name="description" content="Live Google Maps traffic between two places: drive time right now, the delay caused by the jam, and the time once it clears.">
+  <link rel="stylesheet" href="style.css">
+</head>
+<body>
+  <header class="top">
+    <div class="wrap">
+      <h1>Traffic Checker</h1>
+      <p class="sub">Enter two places. See how bad the jam is, how long the drive takes now, and how long it takes once the jam clears.</p>
+    </div>
+  </header>
+
+  <main class="wrap">
+
+    <!-- Shown only when no API key was baked in at deploy time -->
+    <section id="key-panel" class="card notice" hidden>
+      <h2>Add your Google Maps API key</h2>
+      <p>This site needs a Google Maps API key (Maps JavaScript API + Routes API enabled). It is saved only in this browser.</p>
+      <form id="key-form" class="inline">
+        <input id="key-input" type="password" placeholder="AIza..." autocomplete="off" required aria-label="Google Maps API key">
+        <button type="submit">Save key</button>
+      </form>
+    </section>
+
+    <section class="card">
+      <form id="search" autocomplete="off">
+        <div class="places">
+          <label class="field">
+            <span>From</span>
+            <div class="with-btn">
+              <input id="from" type="text" placeholder="e.g. Charbagh Railway Station, Lucknow" required>
+              <button type="button" id="locate" class="icon" title="Use my current location" aria-label="Use my current location">&#9737;</button>
+            </div>
+          </label>
+          <button type="button" id="swap" class="icon swap" title="Swap places" aria-label="Swap places">&#8645;</button>
+          <label class="field">
+            <span>To</span>
+            <input id="to" type="text" placeholder="e.g. Amausi Airport" required>
+          </label>
+        </div>
+
+        <div class="options">
+          <label class="field small">
+            <span>Leave</span>
+            <select id="when">
+              <option value="now">Now</option>
+              <option value="custom">At a set time</option>
+            </select>
+          </label>
+          <label class="field small" id="when-wrap" hidden>
+            <span>Date &amp; time</span>
+            <input id="when-time" type="datetime-local">
+          </label>
+          <label class="check"><input id="auto" type="checkbox"> Auto-refresh every 5 min</label>
+          <button type="submit" id="go" class="primary">Check traffic</button>
+        </div>
+      </form>
+      <p id="error" class="error" role="alert" hidden></p>
+    </section>
+
+    <section id="results" hidden>
+      <div class="card status">
+        <div class="status-head">
+          <span id="level-badge" class="badge">-</span>
+          <span id="level-note" class="muted"></span>
+        </div>
+        <div class="meter" aria-hidden="true"><div id="meter-fill"></div></div>
+        <p class="meter-caption"><span id="delay-pct"></span></p>
+      </div>
+
+      <div class="stats">
+        <div class="card stat">
+          <span class="label">Time right now (with traffic)</span>
+          <strong id="stat-now">-</strong>
+          <span class="muted" id="eta"></span>
+        </div>
+        <div class="card stat">
+          <span class="label">Time after the jam clears</span>
+          <strong id="stat-free">-</strong>
+          <span class="muted">Free-flow, no traffic</span>
+        </div>
+        <div class="card stat">
+          <span class="label">Extra time lost to the jam</span>
+          <strong id="stat-delay">-</strong>
+          <span class="muted" id="dist"></span>
+        </div>
+      </div>
+    </section>
+
+    <section class="card map-card">
+      <div class="map-head">
+        <h2>Route map</h2>
+        <label class="check"><input id="layer-toggle" type="checkbox" checked> Live traffic layer</label>
+      </div>
+      <div id="map" role="img" aria-label="Map of the route with live traffic">
+        <p class="map-placeholder">The map appears here after you check a route.</p>
+      </div>
+      <ul class="legend" aria-label="Traffic colour legend">
+        <li><i style="background:#1e9e55"></i>Flowing</li>
+        <li><i style="background:#f2a900"></i>Slow</li>
+        <li><i style="background:#d93025"></i>Jam</li>
+      </ul>
+    </section>
+
+    <section id="routes-card" class="card" hidden>
+      <h2>Routes</h2>
+      <p class="muted">Tap a route to see it on the map.</p>
+      <ul id="route-list" class="route-list"></ul>
+    </section>
+
+    <section id="forecast-card" class="card" hidden>
+      <h2>When does the jam clear?</h2>
+      <p id="forecast-summary" class="forecast-summary"></p>
+      <div id="forecast" class="forecast" role="list"></div>
+      <p class="muted small-print">Later times are Google's predictions based on typical traffic patterns. They are estimates, not guarantees.</p>
+    </section>
+
+  </main>
+
+  <footer class="wrap foot">
+    <p>Traffic data and routing by Google Maps Platform. Not affiliated with Google. Estimates only; drive safely.</p>
+  </footer>
+
+  <script src="config.js"></script>
+  <script src="app.js"></script>
+</body>
+</html>

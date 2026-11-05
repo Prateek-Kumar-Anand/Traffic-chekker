@@ -1,13 +1,10 @@
-name: Deploy site to GitHub Pages
+name: Deploy to GitHub Pages
 
 on:
   push:
     branches: [main]
-    paths: ["site/**", "scripts/**", ".github/workflows/deploy.yml"]
   workflow_dispatch:
 
-# Least privilege: read the repo, publish Pages, nothing else. No secrets are used here:
-# the site only needs the backend's public address.
 permissions:
   contents: read
   pages: write
@@ -25,23 +22,25 @@ jobs:
       url: ${{ steps.deployment.outputs.page_url }}
     steps:
       - uses: actions/checkout@v4
-        with:
-          persist-credentials: false
 
-      - uses: actions/setup-node@v4
-        with:
-          node-version: 22
-
-      # API_BASE_URL is a repository *variable* (Settings > Secrets and variables > Actions > Variables).
-      # The build fails if the output contains anything that looks like a key or connection string.
-      - name: Build site
+      - name: Assemble site and inject Maps API key
         env:
-          API_BASE_URL: ${{ vars.API_BASE_URL }}
-        run: node scripts/build-site.mjs
+          MAPS_KEY: ${{ secrets.GOOGLE_MAPS_API_KEY }}
+        run: |
+          mkdir _site
+          cp index.html style.css app.js config.js _site/
+          if [ -n "$MAPS_KEY" ]; then
+            sed -i "s|__GOOGLE_MAPS_API_KEY__|${MAPS_KEY}|g" _site/config.js
+            echo "API key injected from repository secret."
+          else
+            echo "::warning::No GOOGLE_MAPS_API_KEY secret set. The site will ask visitors for their own key."
+          fi
 
       - uses: actions/configure-pages@v5
+
       - uses: actions/upload-pages-artifact@v3
         with:
           path: _site
+
       - id: deployment
         uses: actions/deploy-pages@v4
