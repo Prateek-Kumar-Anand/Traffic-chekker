@@ -216,6 +216,15 @@
     </footer>
   </div>
 
+  <!-- Pop-up shown when the backend API is not connected -->
+  <div id="api-popup" class="popup" hidden>
+    <div class="popup-box" role="alertdialog" aria-modal="true" aria-labelledby="popup-title" aria-describedby="popup-text">
+      <h2 id="popup-title">API not connected</h2>
+      <p id="popup-text">This site is not connected to its traffic API yet, so it cannot check traffic right now.</p>
+      <button type="button" id="popup-ok" class="primary">OK</button>
+    </div>
+  </div>
+
   <script src="config.js"></script>
   <!-- Modules run in this order, so Firebase is ready (or known to have failed) before app.js starts. -->
   <script type="module" src="auth.js"></script>

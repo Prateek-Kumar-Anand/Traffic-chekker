@@ -21,13 +21,18 @@ function fail(msg) {
 const env = (name) => (process.env[name] || "").trim();
 
 // ---- backend address ----
+// API_BASE_URL is optional. Without it the site still builds and deploys; the page then shows an
+// "API not connected" pop-up when someone tries to run a check.
 const base = env("API_BASE_URL").replace(/\/+$/, "");
-if (!base) fail("API_BASE_URL is not set. Set it to the origin of your deployed backend, e.g. https://traffic-checker-api.onrender.com");
-let url;
-try { url = new URL(base); } catch { fail("API_BASE_URL is not a valid URL."); }
-const isLocal = url.hostname === "localhost" || url.hostname === "127.0.0.1";
-if (url.protocol !== "https:" && !(url.protocol === "http:" && isLocal)) fail("API_BASE_URL must use https (http is only allowed for localhost).");
-if (url.origin !== base) fail("API_BASE_URL must be just the origin, with no path, query or trailing slash content (got " + base + ").");
+if (base) {
+  let url;
+  try { url = new URL(base); } catch { fail("API_BASE_URL is not a valid URL."); }
+  const isLocal = url.hostname === "localhost" || url.hostname === "127.0.0.1";
+  if (url.protocol !== "https:" && !(url.protocol === "http:" && isLocal)) fail("API_BASE_URL must use https (http is only allowed for localhost).");
+  if (url.origin !== base) fail("API_BASE_URL must be just the origin, with no path, query or trailing slash content (got " + base + ").");
+} else {
+  console.warn("API_BASE_URL is not set: building without a backend (the site will show \"API not connected\").");
+}
 
 // ---- Firebase web settings (public identifiers, but validated so a typo cannot ship) ----
 const fbKey = env("FIREBASE_API_KEY");
@@ -93,4 +98,4 @@ for (const file of walk(OUT)) {
   }
 }
 
-console.log(`Site built in ${OUT}/ (backend ${base}, Firebase project ${fbProject})`);
+console.log(`Site built in ${OUT}/ (backend ${base || "none"}, Firebase project ${fbProject})`);

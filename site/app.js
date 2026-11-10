@@ -174,9 +174,20 @@
     e.hidden = !msg;
   }
 
+  // Pop-up for a site that was deployed without a backend API address.
+  function showApiPopup() {
+    $("#api-popup").hidden = false;
+    $("#popup-ok").focus();
+  }
+  function hideApiPopup() {
+    $("#api-popup").hidden = true;
+    const go = $("#go");
+    if (go) go.focus();
+  }
+
   function setBusy(busy) {
     const b = $("#go");
-    b.disabled = busy || !CONFIGURED;
+    b.disabled = busy;
     b.textContent = busy ? "Checking..." : "Check traffic";
   }
 
@@ -596,7 +607,7 @@
   function onSubmit(e) {
     e.preventDefault();
     showError("");
-    if (!CONFIGURED) { showError("This site is not connected to its backend yet."); return; }
+    if (!CONFIGURED) { showApiPopup(); return; }
     if (!userInfo) return;
 
     const from = cleanPlace($("#from").value);
@@ -768,10 +779,6 @@
     data = loadData(storeKey);
     $("#account-email").textContent = u.email;
     $("#auto").checked = data.auto;
-    if (!CONFIGURED) {
-      showError("This site is not connected to its backend yet (the API address is missing). If you own this site, see the README.");
-      $("#go").disabled = true;
-    }
     applyAuto();
     refreshMine();
     showView("app-view");
@@ -802,6 +809,9 @@
   // The app itself --------------------------------------------------------------
   function initApp() {
     $("#search").addEventListener("submit", onSubmit);
+    $("#popup-ok").addEventListener("click", hideApiPopup);
+    $("#api-popup").addEventListener("click", (e) => { if (e.target === $("#api-popup")) hideApiPopup(); });
+    document.addEventListener("keydown", (e) => { if (e.key === "Escape" && !$("#api-popup").hidden) hideApiPopup(); });
 
     $("#sign-out").addEventListener("click", () => { Auth.signOut(); });
 

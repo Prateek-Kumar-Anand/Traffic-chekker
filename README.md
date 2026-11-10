@@ -68,7 +68,7 @@ The Firebase `apiKey` is **not** the Maps key. It is a public identifier for the
 
 | Secret | Value |
 | --- | --- |
-| `API_BASE_URL` | backend address from step 3 |
+| `API_BASE_URL` | backend address from step 3 (optional: leave it out and the site shows an "API not connected" pop-up) |
 | `FIREBASE_API_KEY` | `apiKey` from step 4 |
 | `FIREBASE_AUTH_DOMAIN` | `authDomain` from step 4 |
 | `FIREBASE_PROJECT_ID` | `projectId` from step 4 |
