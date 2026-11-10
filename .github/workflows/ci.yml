@@ -24,6 +24,11 @@ jobs:
       - name: Site builds and passes the secret scan
         env:
           API_BASE_URL: https://traffic-api.example.com
+          # Dummy, correctly shaped values: CI only checks that the build works and the secret scan passes.
+          FIREBASE_API_KEY: AIzaSyA1234567890abcdefghijklmnopqrstuv
+          FIREBASE_AUTH_DOMAIN: demo-project.firebaseapp.com
+          FIREBASE_PROJECT_ID: demo-project
+          FIREBASE_APP_ID: 1:123456789012:web:abcdef0123456789
         run: node scripts/build-site.mjs
 
   audit:

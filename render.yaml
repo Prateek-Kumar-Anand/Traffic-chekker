@@ -10,6 +10,8 @@ services:
     envVars:
       - key: GOOGLE_MAPS_API_KEY
         sync: false
+      - key: FIREBASE_PROJECT_ID
+        sync: false
       - key: MONGODB_URI
         sync: false
       - key: ALLOWED_ORIGINS

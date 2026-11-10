@@ -1,6 +1,6 @@
 // MongoDB store. Three small collections, each with a TTL index so old data deletes itself:
 //   route_cache  - sanitised Google responses, keyed by a SHA-256 hash (no raw places stored)
-//   rate_limits  - per-client counters, keyed by an HMAC of the IP (no raw IPs stored)
+//   rate_limits  - per-client and per-account counters, keyed by an HMAC (no raw IPs or user ids stored)
 //   quota        - one document per UTC day counting Google calls (spend cap)
 //
 // Every _id is checked against a strict pattern before it reaches a query, so user-supplied

@@ -11,6 +11,7 @@ const ENV = {
   MONGODB_URI: "mongodb://x",
   IP_HASH_SECRET: "s".repeat(32),
   ALLOWED_ORIGINS: "https://a.github.io",
+  FIREBASE_PROJECT_ID: "my-traffic-app",
 };
 
 test("config: requires secrets and rejects weak or unsafe values", () => {
@@ -21,6 +22,8 @@ test("config: requires secrets and rejects weak or unsafe values", () => {
   assert.throws(() => loadConfig({ ...ENV, ALLOWED_ORIGINS: "https://a.github.io/repo/" }), /bare origin/);
   assert.throws(() => loadConfig({ ...ENV, RATE_LIMIT_PER_MIN: "abc" }), /whole number/);
   assert.throws(() => loadConfig({ ...ENV, TRUST_PROXY_HOPS: "50" }), /between/);
+  assert.throws(() => loadConfig({ ...ENV, FIREBASE_PROJECT_ID: "" }), /FIREBASE_PROJECT_ID is required/);
+  assert.throws(() => loadConfig({ ...ENV, FIREBASE_PROJECT_ID: "Bad Id!" }), /Firebase project id/);
   const ok = loadConfig({ ...ENV, ALLOWED_ORIGINS: "https://a.github.io, http://localhost:8000" });
   assert.deepEqual(ok.allowedOrigins, ["https://a.github.io", "http://localhost:8000"]);
   assert.equal(ok.requireOrigin, true);

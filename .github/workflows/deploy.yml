@@ -23,18 +23,20 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
-      - name: Assemble site and inject Maps API key
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+
+      # The Google Maps key is NOT used here. It lives only on the backend (see README).
+      # These five values are public identifiers; they are kept as secrets so they stay out of the repo.
+      - name: Build the site
         env:
-          MAPS_KEY: ${{ secrets.GOOGLE_MAPS_API_KEY }}
-        run: |
-          mkdir _site
-          cp index.html style.css app.js config.js _site/
-          if [ -n "$MAPS_KEY" ]; then
-            sed -i "s|__GOOGLE_MAPS_API_KEY__|${MAPS_KEY}|g" _site/config.js
-            echo "API key injected from repository secret."
-          else
-            echo "::warning::No GOOGLE_MAPS_API_KEY secret set. The site will ask visitors for their own key."
-          fi
+          API_BASE_URL: ${{ secrets.API_BASE_URL }}
+          FIREBASE_API_KEY: ${{ secrets.FIREBASE_API_KEY }}
+          FIREBASE_AUTH_DOMAIN: ${{ secrets.FIREBASE_AUTH_DOMAIN }}
+          FIREBASE_PROJECT_ID: ${{ secrets.FIREBASE_PROJECT_ID }}
+          FIREBASE_APP_ID: ${{ secrets.FIREBASE_APP_ID }}
+        run: node scripts/build-site.mjs
 
       - uses: actions/configure-pages@v5
 

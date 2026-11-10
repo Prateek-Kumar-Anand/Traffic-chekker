@@ -3,7 +3,8 @@
 (function () {
   // ---------------------------------------------------------------------------
   // Safety rules for this file:
-  //  - No secrets live here. Google is only ever called by the backend.
+  //  - No secrets live here. Google Maps is only ever called by the backend, and the backend
+  //    only answers requests that carry a valid Firebase login token.
   //  - Nothing is written with innerHTML. All text goes in through textContent,
   //    so place names, route descriptions and stored data can never become markup.
   //  - Everything read back from the server or from localStorage is re-validated.
@@ -15,7 +16,7 @@
   // An unbuilt page still has the "__..." placeholder, which is never a valid backend address.
   const CONFIGURED = /^https?:\/\//.test(API_BASE) && API_BASE.indexOf("__") === -1;
 
-  const STORE_KEY = "trafficChecker.v2";
+  const STORE_PREFIX = "trafficChecker.v3.";
   const MAX_RECENT = 8;
   const MAX_SAVED = 20;
   const REFRESH_MS = 5 * 60 * 1000;
@@ -134,10 +135,14 @@
   // ---------- data kept in this browser (localStorage) ----------
   function emptyData() { return { recent: [], saved: [], auto: false }; }
 
-  function loadData() {
+  // Saved data is kept per account, so two people sharing one browser do not see each other's routes.
+  let storeKey = null;
+
+  function loadData(key) {
     const out = emptyData();
+    if (!key) return out;
     let raw = null;
-    try { raw = window.localStorage.getItem(STORE_KEY); } catch (e) { return out; }
+    try { raw = window.localStorage.getItem(key); } catch (e) { return out; }
     if (!raw || raw.length > 100000) return out;
     let j;
     try { j = JSON.parse(raw); } catch (e) { return out; }
@@ -148,15 +153,17 @@
     return out;
   }
 
-  let data = loadData();
+  let data = emptyData();
 
   function persist() {
-    try { window.localStorage.setItem(STORE_KEY, JSON.stringify(data)); }
+    if (!storeKey) return;
+    try { window.localStorage.setItem(storeKey, JSON.stringify(data)); }
     catch (e) { /* private mode or storage full: the page keeps working from memory */ }
   }
 
   // ---------- state ----------
   const state = { routes: [], forecast: null, selected: 0, from: "", to: "", depart: null, loaded: false };
+  const Auth = window.TCAuth || { status: "failed" };
   let refreshTimer = null;
   let runToken = 0;
 
@@ -182,6 +189,17 @@
   }
 
   async function callApi(payload) {
+    try {
+      return await callApiOnce(payload, false);
+    } catch (err) {
+      // An expired login token is refreshed once before giving up.
+      if (err instanceof ApiError && err.status === 401) return callApiOnce(payload, true);
+      throw err;
+    }
+  }
+
+  async function callApiOnce(payload, freshToken) {
+    const token = await Auth.getToken(freshToken);
     const ctl = new AbortController();
     const timer = setTimeout(() => ctl.abort(), REQUEST_TIMEOUT_MS);
     try {
@@ -192,7 +210,7 @@
         cache: "no-store",
         redirect: "error",
         referrerPolicy: "no-referrer",
-        headers: { "Content-Type": "application/json" },
+        headers: { "Content-Type": "application/json", "Authorization": "Bearer " + token },
         body: JSON.stringify(payload),
         signal: ctl.signal,
       });
@@ -222,12 +240,18 @@
         case "no_route":
         case "invalid_request":
           return err.serverMessage || "That request could not be completed.";
+        case "unauthorized":
+          return "Your session has ended. Please sign in again.";
+        case "email_not_verified":
+          return "Confirm your email address first, then try again.";
         case "forbidden_origin":
           return "This website is not allowed to use the traffic service. The site owner must add this address to the backend's ALLOWED_ORIGINS setting.";
         default:
           return "The traffic service is having trouble right now. Please try again shortly.";
       }
     }
+    if (err && err.code === "auth/no-current-user") return "Your session has ended. Please sign in again.";
+    if (err && typeof err.code === "string" && err.code.indexOf("auth/") === 0) return "Could not refresh your sign-in. Check your connection and try again.";
     if (err && err.message === "bad response") return "The traffic service sent an unexpected reply. Please try again.";
     return "Could not reach the traffic service. Check your connection and try again.";
   }
@@ -256,6 +280,11 @@
       refreshMine();
     } catch (err) {
       if (token !== runToken) return;
+      // A login that no longer works sends the person back to the sign-in page.
+      if ((err instanceof ApiError && err.status === 401) || (err && err.code === "auth/no-current-user")) {
+        signOutWithMessage("Your session has ended. Please sign in again.");
+        return;
+      }
       showError(friendlyError(err));
       // Stop auto-refresh when the service pushes back, so we never hammer it.
       if (err instanceof ApiError && (err.status === 429 || err.status === 503 || err.status === 403)) stopAuto();
@@ -533,15 +562,19 @@
   }
 
   // ---------- auto-refresh ----------
-  function stopAuto() {
+  function clearTimer() {
     if (refreshTimer) { clearInterval(refreshTimer); refreshTimer = null; }
+  }
+
+  function stopAuto() {
+    clearTimer();
     $("#auto").checked = false;
     data.auto = false;
     persist();
   }
 
   function applyAuto() {
-    if (refreshTimer) { clearInterval(refreshTimer); refreshTimer = null; }
+    clearTimer();
     if ($("#auto").checked) {
       refreshTimer = setInterval(() => {
         if (state.loaded && !document.hidden && !$("#go").disabled) run(false);
@@ -564,6 +597,7 @@
     e.preventDefault();
     showError("");
     if (!CONFIGURED) { showError("This site is not connected to its backend yet."); return; }
+    if (!userInfo) return;
 
     const from = cleanPlace($("#from").value);
     const to = cleanPlace($("#to").value);
@@ -579,15 +613,197 @@
     run(true);
   }
 
-  function init() {
-    $("#auto").checked = data.auto;
+  // ---------- views: sign in, confirm email, app ----------
+  let userInfo = null;
+  const VIEWS = ["boot", "login-view", "verify-view", "app-view"];
 
+  function showView(id) {
+    VIEWS.forEach((v) => { $("#" + v).hidden = v !== id; });
+    window.scrollTo(0, 0);
+  }
+
+  function setText(sel, msg) {
+    const n = $(sel);
+    n.textContent = msg || "";
+    n.hidden = !msg;
+  }
+
+  function authMessage(err) {
+    switch (err && err.code) {
+      case "auth/invalid-credential":
+      case "auth/invalid-login-credentials":
+      case "auth/wrong-password":
+      case "auth/user-not-found":
+        return "Email or password is incorrect.";
+      case "auth/invalid-email": return "Enter a valid email address.";
+      case "auth/missing-password": return "Enter your password.";
+      case "auth/email-already-in-use": return "An account with this email already exists. Sign in instead.";
+      case "auth/weak-password": return "Choose a password with at least 8 characters.";
+      case "auth/too-many-requests": return "Too many attempts. Wait a few minutes and try again.";
+      case "auth/network-request-failed": return "Can't reach the sign-in service. Check your connection and try again.";
+      case "auth/popup-blocked": return "Your browser blocked the sign-in window. Allow pop-ups for this site and try again.";
+      case "auth/popup-closed-by-user":
+      case "auth/cancelled-popup-request": return "";
+      case "auth/unauthorized-domain": return "This website's address is not authorised for sign-in. The site owner must add it in Firebase under Authentication > Settings > Authorized domains.";
+      case "auth/operation-not-allowed": return "This sign-in method is turned off. The site owner must enable it in Firebase under Authentication > Sign-in method.";
+      case "auth/user-disabled": return "This account has been disabled.";
+      default: return "Could not sign you in. Please try again.";
+    }
+  }
+
+  // Login page --------------------------------------------------------------
+  let mode = "signin";
+
+  function setMode(m) {
+    mode = m;
+    const up = m === "signup";
+    $("#login-title").textContent = up ? "Create your account" : "Sign in";
+    $("#login-sub").textContent = up ? "We will email you a link to confirm your address." : "Use your Google account or your email.";
+    $("#email-submit").textContent = up ? "Create account" : "Sign in";
+    $("#toggle-mode").textContent = up ? "I already have an account" : "Create an account";
+    $("#password").autocomplete = up ? "new-password" : "current-password";
+    $("#forgot").hidden = up;
+    setText("#login-error", "");
+    setText("#login-msg", "");
+  }
+
+  function setLoginBusy(busy) {
+    ["#google-btn", "#email-submit", "#toggle-mode", "#forgot"].forEach((sel) => { $(sel).disabled = busy; });
+  }
+
+  async function guarded(fn) {
+    setText("#login-error", "");
+    setText("#login-msg", "");
+    setLoginBusy(true);
+    try { await fn(); }
+    catch (err) { setText("#login-error", authMessage(err)); }
+    finally { setLoginBusy(false); }
+  }
+
+  function validEmail(v) { return v.length <= 254 && /^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(v); }
+
+  function initLogin() {
+    $("#google-btn").addEventListener("click", () => guarded(() => Auth.signInWithGoogle()));
+
+    $("#email-form").addEventListener("submit", (e) => {
+      e.preventDefault();
+      const email = $("#email").value.trim();
+      const pw = $("#password").value;
+      if (!validEmail(email)) { setText("#login-error", "Enter a valid email address."); return; }
+      if (!pw) { setText("#login-error", "Enter your password."); return; }
+      if (mode === "signup" && pw.length < 8) { setText("#login-error", "Choose a password with at least 8 characters."); return; }
+      guarded(async () => {
+        if (mode === "signup") await Auth.signUp(email, pw);
+        else await Auth.signIn(email, pw);
+        $("#password").value = "";
+      });
+    });
+
+    $("#toggle-mode").addEventListener("click", () => setMode(mode === "signup" ? "signin" : "signup"));
+
+    $("#forgot").addEventListener("click", () => {
+      const email = $("#email").value.trim();
+      if (!validEmail(email)) { setText("#login-error", "Enter your email address above, then select this again."); return; }
+      guarded(async () => {
+        try { await Auth.resetPassword(email); }
+        catch (err) {
+          // Do not reveal whether an account exists for this address.
+          if (err && err.code !== "auth/user-not-found") throw err;
+        }
+        setText("#login-msg", "If an account exists for that address, we have sent a link to reset the password.");
+      });
+    });
+  }
+
+  // Confirm-email page -------------------------------------------------------
+  function initVerify() {
+    $("#verify-continue").addEventListener("click", async () => {
+      setText("#verify-error", ""); setText("#verify-msg", "");
+      try {
+        const u = await Auth.refreshUser();
+        if (u && u.verified) { onUser(u); return; }
+        setText("#verify-error", "Not confirmed yet. Open the link in the email we sent, then try again.");
+      } catch (err) { setText("#verify-error", authMessage(err)); }
+    });
+
+    $("#verify-resend").addEventListener("click", async () => {
+      setText("#verify-error", ""); setText("#verify-msg", "");
+      try {
+        await Auth.resendVerification();
+        setText("#verify-msg", "Email sent. It can take a minute to arrive; check your spam folder too.");
+      } catch (err) { setText("#verify-error", authMessage(err)); }
+    });
+
+    $("#verify-signout").addEventListener("click", () => { Auth.signOut(); });
+  }
+
+  // Who is signed in -----------------------------------------------------------
+  let pendingLoginMsg = "";
+
+  function signOutWithMessage(msg) {
+    pendingLoginMsg = msg; // shown by onUser(null) once the sign-out has taken effect
+    Promise.resolve(Auth.signOut()).catch(() => {});
+  }
+
+  function resetAppState() {
+    runToken++;               // ignore any request still in flight
+    clearTimer();
+    state.routes = []; state.forecast = null; state.selected = 0; state.from = ""; state.to = ""; state.depart = null; state.loaded = false;
+    $("#results").hidden = true;
+    $("#routes-card").hidden = true;
+    $("#forecast-card").hidden = true;
+    $("#from").value = "";
+    $("#to").value = "";
+    $("#when").value = "now";
+    $("#when-wrap").hidden = true;
+    showError("");
+    setBusy(false);
+    data = emptyData();
+    storeKey = null;
+  }
+
+  function enterApp(u) {
+    resetAppState();
+    storeKey = STORE_PREFIX + String(u.uid).replace(/[^A-Za-z0-9_-]/g, "").slice(0, 128);
+    data = loadData(storeKey);
+    $("#account-email").textContent = u.email;
+    $("#auto").checked = data.auto;
     if (!CONFIGURED) {
       showError("This site is not connected to its backend yet (the API address is missing). If you own this site, see the README.");
       $("#go").disabled = true;
     }
+    applyAuto();
+    refreshMine();
+    showView("app-view");
+  }
 
+  function onUser(u) {
+    userInfo = u;
+    if (!u) {
+      resetAppState();
+      setMode("signin");
+      setText("#login-msg", pendingLoginMsg);
+      pendingLoginMsg = "";
+      $("#password").value = "";
+      showView("login-view");
+      return;
+    }
+    if (!u.verified) {
+      resetAppState();
+      $("#verify-email").textContent = u.email;
+      setText("#verify-msg", ""); setText("#verify-error", "");
+      showView("verify-view");
+      return;
+    }
+    setText("#login-msg", "");
+    enterApp(u);
+  }
+
+  // The app itself --------------------------------------------------------------
+  function initApp() {
     $("#search").addEventListener("submit", onSubmit);
+
+    $("#sign-out").addEventListener("click", () => { Auth.signOut(); });
 
     $("#swap").addEventListener("click", () => {
       const a = $("#from").value;
@@ -636,13 +852,29 @@
       if (!window.confirm("Delete all saved and recent routes from this browser?")) return;
       data = emptyData();
       stopAuto(); // writes the (now empty) record, so remove the key afterwards
-      try { window.localStorage.removeItem(STORE_KEY); } catch (e) { /* ignore */ }
+      try { if (storeKey) window.localStorage.removeItem(storeKey); } catch (e) { /* ignore */ }
       refreshMine();
     });
-
-    applyAuto();
-    refreshMine();
   }
 
-  init();
+  function init() {
+    initLogin();
+    initVerify();
+    initApp();
+
+    if (Auth.status !== "ready") {
+      // Firebase is not set up, or its script could not load: say so instead of showing a dead page.
+      const off = Auth.status === "unconfigured"
+        ? "Sign-in is not set up yet. If you own this site, add your Firebase settings (see the README)."
+        : "The sign-in service could not load. Check your connection and reload the page.";
+      ["#google-btn", "#email-submit", "#toggle-mode", "#forgot"].forEach((sel) => { $(sel).disabled = true; });
+      setText("#login-error", off);
+      showView("login-view");
+      return;
+    }
+    Auth.onChange(onUser);
+  }
+
+  // Firebase loads asynchronously; wait until it is ready (or known to have failed).
+  Promise.resolve(window.TCAuthReady).then(init);
 })();

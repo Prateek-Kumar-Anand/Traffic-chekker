@@ -2,6 +2,7 @@ import { loadConfig } from "./config.js";
 import { createGoogleClient } from "./google.js";
 import { createMongoStore } from "./store-mongo.js";
 import { createServer } from "./app.js";
+import { createFirebaseVerifier } from "./auth.js";
 
 let config;
 try {
@@ -21,7 +22,8 @@ try {
 }
 
 const google = createGoogleClient({ apiKey: config.googleKey });
-const server = createServer({ config, store, google });
+const auth = createFirebaseVerifier({ projectId: config.firebaseProjectId });
+const server = createServer({ config, store, google, auth });
 
 server.listen(config.port, "0.0.0.0", () => {
   console.log(JSON.stringify({ level: "info", msg: "listening", port: config.port }));

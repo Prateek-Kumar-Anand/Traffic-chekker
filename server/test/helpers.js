@@ -1,7 +1,41 @@
 import http from "node:http";
 import { createServer } from "../src/app.js";
 import { createMemoryStore } from "../src/store-memory.js";
+import crypto from "node:crypto";
 import { loadConfig } from "../src/config.js";
+import { createFirebaseVerifier } from "../src/auth.js";
+
+export const PROJECT_ID = "traffic-test-project";
+export const KID = "test-kid-1";
+const { publicKey, privateKey } = crypto.generateKeyPairSync("rsa", { modulusLength: 2048 });
+export const PUBLIC_PEM = publicKey.export({ type: "spki", format: "pem" });
+const OTHER = crypto.generateKeyPairSync("rsa", { modulusLength: 2048 });
+
+const b64 = (o) => Buffer.from(JSON.stringify(o)).toString("base64url");
+
+// Builds a Firebase-style ID token. `claims` overrides the defaults; `header` overrides the JOSE header.
+export function makeToken(claims = {}, { header = {}, signWith = privateKey, now = Date.parse("2026-11-04T10:00:00Z") } = {}) {
+  const sec = Math.floor(now / 1000);
+  const h = { alg: "RS256", kid: KID, typ: "JWT", ...header };
+  const p = {
+    iss: "https://securetoken.google.com/" + PROJECT_ID,
+    aud: PROJECT_ID,
+    sub: "user-abc123",
+    iat: sec - 60,
+    auth_time: sec - 60,
+    exp: sec + 3600,
+    email: "alice@example.com",
+    email_verified: true,
+    firebase: { sign_in_provider: "google.com" },
+    ...claims,
+  };
+  for (const k of Object.keys(p)) if (p[k] === undefined) delete p[k];
+  const data = b64(h) + "." + b64(p);
+  const sig = h.alg === "RS256" ? crypto.sign("RSA-SHA256", Buffer.from(data), signWith).toString("base64url") : "c2ln";
+  return data + "." + sig;
+}
+export const wrongKeyToken = (claims) => makeToken(claims, { signWith: OTHER.privateKey });
+export const GOOD_TOKEN = () => makeToken();
 
 export const SECRET_KEY = "AIzaSy-TEST-SECRET-KEY-0123456789";
 export const ORIGIN = "https://alice.github.io";
@@ -13,6 +47,7 @@ export function makeConfig(over = {}) {
       MONGODB_URI: "mongodb://unused",
       IP_HASH_SECRET: "x".repeat(40),
       ALLOWED_ORIGINS: ORIGIN,
+      FIREBASE_PROJECT_ID: PROJECT_ID,
     }),
     ...over,
   });
@@ -46,21 +81,29 @@ export async function start(over = {}, googleOpts = {}) {
   const store = over.store || createMemoryStore({ now });
   const google = over.google || fakeGoogle(googleOpts);
   const logs = [];
-  const config = makeConfig(over.config || {});
-  const server = createServer({ config, store, google, now, log: (e) => logs.push(e) });
+  const config = makeConfig({ userRateLimitPerMin: 1000, userRateLimitPerHour: 10000, ...(over.config || {}) });
+  const certFetches = { n: 0 };
+  const auth = over.auth || createFirebaseVerifier({
+    projectId: PROJECT_ID,
+    now,
+    fetchCerts: async () => { certFetches.n++; return { certs: { [KID]: PUBLIC_PEM }, maxAgeSec: 3600 }; },
+  });
+  const server = createServer({ config, store, google, auth, now, log: (e) => logs.push(e) });
   await new Promise((r) => server.listen(0, "127.0.0.1", r));
   const port = server.address().port;
   return {
-    server, store, google, clock, logs, config, port,
+    server, store, google, clock, logs, config, port, certFetches,
     close: () => new Promise((r) => { server.closeAllConnections?.(); server.close(r); }),
     call: (opts) => call(port, opts),
   };
 }
 
-export function call(port, { method = "POST", path = "/api/route", headers = {}, body, raw, origin = ORIGIN, chunked = false } = {}) {
+export function call(port, { method = "POST", path = "/api/route", headers = {}, body, raw, origin = ORIGIN, chunked = false, token } = {}) {
   return new Promise((resolve, reject) => {
     const h = { ...headers };
     if (origin) h.Origin = origin;
+    // Signed in by default; pass token: null to send no Authorization header, or a string to send that token.
+    if (token !== null && !h.Authorization) h.Authorization = "Bearer " + (token === undefined ? GOOD_TOKEN() : token);
     let payload = raw;
     if (payload === undefined && body !== undefined) {
       payload = JSON.stringify(body);

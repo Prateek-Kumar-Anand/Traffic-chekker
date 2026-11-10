@@ -3,6 +3,7 @@ import net from "node:net";
 import crypto from "node:crypto";
 import { MAX_BODY_BYTES, validateBody, normalizePlace } from "./validate.js";
 import { GoogleError } from "./google.js";
+import { AuthError } from "./auth.js";
 
 export const FORECAST_OFFSETS_MIN = [15, 30, 60, 90, 120, 180];
 
@@ -85,7 +86,7 @@ function defaultLog(entry) {
 // Marks failures of the database layer so they can be told apart from bugs.
 class StoreError extends Error {}
 
-export function createServer({ config, store: rawStore, google, now = Date.now, log = defaultLog }) {
+export function createServer({ config, store: rawStore, google, auth, now = Date.now, log = defaultLog }) {
   const redact = (s) => String(s).split(config.googleKey).join("[redacted]");
   const logSafe = (level, msg, extra = {}) => log({ level, msg: redact(msg), ...extra });
 
@@ -121,18 +122,28 @@ export function createServer({ config, store: rawStore, google, now = Date.now, 
   }
 
   async function handleRoute(req, res, cors) {
-    // 1. Rate limit first, so malformed and probing requests count too.
-    const id = crypto.createHmac("sha256", config.ipHashSecret).update(clientKey(req, config.trustProxyHops)).digest("hex").slice(0, 32);
-    const [perMin, perHour] = await Promise.all([
-      store.hit(id, 60, config.rateLimitPerMin),
-      store.hit(id, 3600, config.rateLimitPerHour),
+    // 1. Who is calling? Anonymous requests are refused before anything else is spent on them.
+    const bearer = /^Bearer ([A-Za-z0-9_.-]+)$/.exec(String(req.headers.authorization || ""));
+    if (!bearer) throw new HttpError(401, "unauthorized", "Sign in to use this service.", { "WWW-Authenticate": "Bearer" });
+    const user = await auth.verify(bearer[1]); // AuthError is mapped in mapError()
+
+    // 2. Rate limit, per network address and per account, so malformed and probing requests count too.
+    const hmac = (v) => crypto.createHmac("sha256", config.ipHashSecret).update(v).digest("hex").slice(0, 32);
+    const ipId = hmac(clientKey(req, config.trustProxyHops));
+    const userId = hmac("uid:" + user.uid); // 32 hex like ipId; different HMAC input, so the two never collide
+    const [ipMin, ipHour, uMin, uHour] = await Promise.all([
+      store.hit(ipId, 60, config.rateLimitPerMin),
+      store.hit(ipId, 3600, config.rateLimitPerHour),
+      store.hit(userId, 60, config.userRateLimitPerMin),
+      store.hit(userId, 3600, config.userRateLimitPerHour),
     ]);
-    if (!perMin.allowed || !perHour.allowed) {
-      const wait = Math.max(perMin.allowed ? 0 : perMin.retryAfterSec, perHour.allowed ? 0 : perHour.retryAfterSec);
+    const hits = [ipMin, ipHour, uMin, uHour];
+    if (hits.some((h) => !h.allowed)) {
+      const wait = Math.max(...hits.map((h) => (h.allowed ? 0 : h.retryAfterSec)));
       throw new HttpError(429, "rate_limited", "Too many requests. Please wait a moment and try again.", { "Retry-After": String(wait) });
     }
 
-    // 2. Content type and body.
+    // 3. Content type and body.
     const mediaType = String(req.headers["content-type"] || "").split(";")[0].trim().toLowerCase();
     if (mediaType !== "application/json") throw new HttpError(415, "unsupported_media_type", "Send JSON.");
     const declared = Number(req.headers["content-length"]);
@@ -144,12 +155,12 @@ export function createServer({ config, store: rawStore, google, now = Date.now, 
     try { parsed = JSON.parse(raw); }
     catch { throw new HttpError(400, "invalid_json", "Request is not valid JSON."); }
 
-    // 3. Strict validation.
+    // 4. Strict validation.
     const v = validateBody(parsed, now());
     if (!v.ok) throw new HttpError(400, "invalid_request", v.error);
     const { origin, destination, depart, forecast: wantForecast } = v.value;
 
-    // 4. Cache, then spend quota only for what we really have to fetch.
+    // 5. Cache, then spend quota only for what we really have to fetch.
     const bucket = depart ? Math.floor(depart.getTime() / 300_000) : "now";
     const base = `v1|${normalizePlace(origin)}|${normalizePlace(destination)}|${bucket}`;
     const day = new Date(now()).toISOString().slice(0, 10);
@@ -198,6 +209,14 @@ export function createServer({ config, store: rawStore, google, now = Date.now, 
 
   function mapError(err) {
     if (err instanceof HttpError) return err;
+    if (err instanceof AuthError) {
+      if (err.kind === "unverified") return new HttpError(403, "email_not_verified", "Confirm your email address, then try again.");
+      if (err.kind === "unavailable") {
+        logSafe("error", err.message);
+        return new HttpError(503, "service_unavailable", "The service is temporarily unavailable.");
+      }
+      return new HttpError(401, "unauthorized", "Your session is not valid. Please sign in again.", { "WWW-Authenticate": "Bearer" });
+    }
     if (err instanceof StoreError) {
       logSafe("error", err.message);
       return new HttpError(503, "service_unavailable", "The service is temporarily unavailable.");
@@ -234,7 +253,8 @@ export function createServer({ config, store: rawStore, google, now = Date.now, 
 
     // CORS allowlist: exact origin match, no wildcard, no credentials.
     // NOTE: CORS only controls which *browser pages* may read responses. It is not
-    // authentication; the rate limit and the daily quota are what protect the Google key.
+    // authentication. Callers must also present a valid Firebase login token (see handleRoute),
+    // and the rate limits and daily quota still cap what a signed-in account can spend.
     const origin = req.headers.origin;
     let cors = {};
     if (origin !== undefined) {
@@ -251,7 +271,7 @@ export function createServer({ config, store: rawStore, google, now = Date.now, 
       return send(res, 204, null, {
         ...cors,
         "Access-Control-Allow-Methods": "POST, OPTIONS",
-        "Access-Control-Allow-Headers": "Content-Type",
+        "Access-Control-Allow-Headers": "Content-Type, Authorization",
         "Access-Control-Max-Age": "600",
       });
     }
