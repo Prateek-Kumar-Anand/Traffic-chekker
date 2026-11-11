@@ -1,0 +1,55 @@
+name: CI
+
+on:
+  push:
+  pull_request:
+  schedule:
+    - cron: "17 3 * * 1"   # weekly, so new advisories show up even without commits
+
+permissions:
+  contents: read
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+      - name: Backend tests (need no packages; MongoDB is loaded lazily)
+        run: npm --prefix server test
+      - name: Site builds and passes the secret scan
+        env:
+          API_BASE_URL: https://traffic-api.example.com
+          # Dummy, correctly shaped values: CI only checks that the build works and the secret scan passes.
+          FIREBASE_API_KEY: AIzaSyA1234567890abcdefghijklmnopqrstuv
+          FIREBASE_AUTH_DOMAIN: demo-project.firebaseapp.com
+          FIREBASE_PROJECT_ID: demo-project
+          FIREBASE_APP_ID: 1:123456789012:web:abcdef0123456789
+        run: node scripts/build-site.mjs
+      - name: Site still builds with no settings at all (it must stay deployable)
+        env:
+          API_BASE_URL: ""
+          FIREBASE_API_KEY: ""
+          FIREBASE_AUTH_DOMAIN: ""
+          FIREBASE_PROJECT_ID: ""
+          FIREBASE_APP_ID: ""
+        run: node scripts/build-site.mjs
+
+  audit:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+      - name: Audit production dependencies
+        working-directory: server
+        run: |
+          npm install --package-lock-only --omit=dev --no-fund
+          npm audit --omit=dev --audit-level=high
