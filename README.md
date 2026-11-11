@@ -24,6 +24,8 @@ Browser (GitHub Pages, white UI)  --login token-->  Backend (Render)  --Maps key
 
 > The website files are public on GitHub Pages, so the sign-in screen in the browser is not what protects the app. The backend refusing anonymous requests is.
 
+> **Just want the site online first?** Skip every step below and deploy with no secrets at all. The site opens without sign-in and shows an "API not connected" pop-up when you press Check traffic. Add the backend and Firebase later to make it work.
+
 ## Set up (in this order)
 
 ### 1. Google Maps key (backend only)

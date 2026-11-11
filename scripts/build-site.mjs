@@ -39,11 +39,18 @@ const fbKey = env("FIREBASE_API_KEY");
 const fbDomain = env("FIREBASE_AUTH_DOMAIN");
 const fbProject = env("FIREBASE_PROJECT_ID");
 const fbApp = env("FIREBASE_APP_ID");
-if (!fbKey) fail("FIREBASE_API_KEY is not set (Firebase console > Project settings > Your apps > apiKey).");
-if (!/^AIza[0-9A-Za-z_-]{35}$/.test(fbKey)) fail("FIREBASE_API_KEY does not look like a Firebase web API key.");
-if (!/^[a-z0-9][a-z0-9.-]{3,60}\.[a-z]{2,}$/.test(fbDomain)) fail("FIREBASE_AUTH_DOMAIN must be a host name such as my-app.firebaseapp.com (no https://, no slash).");
-if (!/^[a-z][a-z0-9-]{4,28}[a-z0-9]$/.test(fbProject)) fail("FIREBASE_PROJECT_ID must be your Firebase project id (lowercase letters, digits, hyphens).");
-if (!/^[0-9]+:[0-9]+:web:[0-9a-f]+$/.test(fbApp)) fail("FIREBASE_APP_ID must look like 1:1234567890:web:abcdef123456 (a *web* app id).");
+// Demo mode: no backend and no Firebase settings at all. The site deploys without sign-in and shows
+// the "API not connected" pop-up on Check. As soon as a backend address is set, sign-in is required.
+const demo = !base && !(fbKey || fbDomain || fbProject || fbApp);
+if (demo) {
+  console.warn("No Firebase settings either: building in demo mode (no sign-in, no backend).");
+} else {
+  if (!fbKey) fail("FIREBASE_API_KEY is not set (Firebase console > Project settings > Your apps > apiKey).");
+  if (!/^AIza[0-9A-Za-z_-]{35}$/.test(fbKey)) fail("FIREBASE_API_KEY does not look like a Firebase web API key.");
+  if (!/^[a-z0-9][a-z0-9.-]{3,60}\.[a-z]{2,}$/.test(fbDomain)) fail("FIREBASE_AUTH_DOMAIN must be a host name such as my-app.firebaseapp.com (no https://, no slash).");
+  if (!/^[a-z][a-z0-9-]{4,28}[a-z0-9]$/.test(fbProject)) fail("FIREBASE_PROJECT_ID must be your Firebase project id (lowercase letters, digits, hyphens).");
+  if (!/^[0-9]+:[0-9]+:web:[0-9a-f]+$/.test(fbApp)) fail("FIREBASE_APP_ID must look like 1:1234567890:web:abcdef123456 (a *web* app id).");
+}
 
 // A key that is named like a backend secret must never be present while building the public site.
 for (const name of ["GOOGLE_MAPS_API_KEY", "MONGODB_URI", "IP_HASH_SECRET"]) {
@@ -53,7 +60,7 @@ for (const name of ["GOOGLE_MAPS_API_KEY", "MONGODB_URI", "IP_HASH_SECRET"]) {
 const TOKENS = {
   __API_BASE__: base,
   __FIREBASE_API_KEY__: fbKey,
-  __FIREBASE_AUTH_DOMAIN__: fbDomain,
+  __FIREBASE_AUTH_DOMAIN__: demo ? "firebase-not-configured.invalid" : fbDomain,
   __FIREBASE_PROJECT_ID__: fbProject,
   __FIREBASE_APP_ID__: fbApp,
 };
@@ -98,4 +105,4 @@ for (const file of walk(OUT)) {
   }
 }
 
-console.log(`Site built in ${OUT}/ (backend ${base || "none"}, Firebase project ${fbProject})`);
+console.log(`Site built in ${OUT}/ (backend ${base || "none"}, Firebase project ${fbProject || "none"})`);

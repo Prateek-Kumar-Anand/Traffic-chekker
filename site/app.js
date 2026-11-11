@@ -784,6 +784,19 @@
     showView("app-view");
   }
 
+  // No backend and no Firebase: the site opens straight to the form; Check shows the "API not connected" pop-up.
+  function enterDemo() {
+    resetAppState();
+    storeKey = STORE_PREFIX + "demo";
+    data = loadData(storeKey);
+    data.auto = false;
+    $(".account").hidden = true;
+    $("#auto").checked = false;
+    $("#auto").disabled = true;
+    refreshMine();
+    showView("app-view");
+  }
+
   function onUser(u) {
     userInfo = u;
     if (!u) {
@@ -871,6 +884,8 @@
     initLogin();
     initVerify();
     initApp();
+
+    if (Auth.status === "unconfigured" && !CONFIGURED) { enterDemo(); return; }
 
     if (Auth.status !== "ready") {
       // Firebase is not set up, or its script could not load: say so instead of showing a dead page.
