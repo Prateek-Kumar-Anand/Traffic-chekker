@@ -30,6 +30,14 @@ jobs:
           FIREBASE_PROJECT_ID: demo-project
           FIREBASE_APP_ID: 1:123456789012:web:abcdef0123456789
         run: node scripts/build-site.mjs
+      - name: Site still builds with no settings at all (it must stay deployable)
+        env:
+          API_BASE_URL: ""
+          FIREBASE_API_KEY: ""
+          FIREBASE_AUTH_DOMAIN: ""
+          FIREBASE_PROJECT_ID: ""
+          FIREBASE_APP_ID: ""
+        run: node scripts/build-site.mjs
 
   audit:
     runs-on: ubuntu-latest

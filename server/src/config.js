@@ -49,7 +49,18 @@ export function loadConfig(env = process.env) {
     return v;
   };
 
-  const googleKey = need("GOOGLE_MAPS_API_KEY");
+  // Optional on purpose: without it the backend still starts and tells the website
+  // "API not connected at the backend", instead of refusing to deploy.
+  const googleKey = (env.GOOGLE_MAPS_API_KEY || "").trim();
+
+  // People who may open the admin console. Matched against the *verified* email in their Firebase login.
+  const adminEmails = (env.ADMIN_EMAILS || "")
+    .split(",")
+    .map((s) => s.trim().toLowerCase())
+    .filter(Boolean);
+  for (const e of adminEmails) {
+    if (e.length > 254 || !/^[^\s@,]+@[^\s@,]+\.[^\s@,]+$/.test(e)) errors.push(`ADMIN_EMAILS has an invalid email: ${e.slice(0, 80)}`);
+  }
   // Firebase project that issues the login tokens. Not a secret: it is the "projectId" in the web config.
   const firebaseProjectId = need("FIREBASE_PROJECT_ID");
   if (firebaseProjectId && !/^[a-z][a-z0-9-]{4,28}[a-z0-9]$/.test(firebaseProjectId)) {
@@ -71,6 +82,7 @@ export function loadConfig(env = process.env) {
 
   const cfg = {
     googleKey,
+    adminEmails: Object.freeze(adminEmails),
     firebaseProjectId,
     mongoUri,
     mongoDb: (env.MONGODB_DB || "trafficchecker").trim(),
@@ -86,6 +98,9 @@ export function loadConfig(env = process.env) {
     // The same limits, counted per signed-in account, so one account cannot dodge them by changing IP.
     userRateLimitPerMin: intVar(env, "USER_RATE_LIMIT_PER_MIN", 10, 1, 10000, errors),
     userRateLimitPerHour: intVar(env, "USER_RATE_LIMIT_PER_HOUR", 100, 1, 100000, errors),
+    // Looser limits for the light endpoints (who am I, admin console), counted separately from traffic checks.
+    miscRateLimitPerMin: intVar(env, "MISC_RATE_LIMIT_PER_MIN", 60, 1, 100000, errors),
+    miscRateLimitPerHour: intVar(env, "MISC_RATE_LIMIT_PER_HOUR", 600, 1, 1000000, errors),
     dailyGoogleCallLimit: intVar(env, "DAILY_GOOGLE_CALL_LIMIT", 1000, 1, 10000000, errors),
     cacheTtlSeconds: intVar(env, "CACHE_TTL_SECONDS", 120, 10, 3600, errors),
   };

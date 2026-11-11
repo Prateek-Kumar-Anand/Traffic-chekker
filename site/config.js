@@ -4,7 +4,6 @@
 // The placeholders below are replaced at build time by scripts/build-site.mjs, from GitHub Actions
 // secrets (see the README):
 //   API_BASE  - address of the Traffic Checker backend, e.g. https://traffic-checker-api.onrender.com
-//               (optional: when empty, the page shows an "API not connected" pop-up on Check)
 //   FIREBASE  - your Firebase web app settings (Firebase console > Project settings > Your apps)
 window.APP_CONFIG = {
   API_BASE: "__API_BASE__",

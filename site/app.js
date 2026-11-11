@@ -174,17 +174,6 @@
     e.hidden = !msg;
   }
 
-  // Pop-up for a site that was deployed without a backend API address.
-  function showApiPopup() {
-    $("#api-popup").hidden = false;
-    $("#popup-ok").focus();
-  }
-  function hideApiPopup() {
-    $("#api-popup").hidden = true;
-    const go = $("#go");
-    if (go) go.focus();
-  }
-
   function setBusy(busy) {
     const b = $("#go");
     b.disabled = busy;
@@ -199,32 +188,40 @@
     this.retryAfter = retryAfter;
   }
 
-  async function callApi(payload) {
+  // One place that talks to the backend. Every call carries the login token.
+  async function request(path, payload) {
+    if (!CONFIGURED) throw new ApiError(0, "not_configured", "", 0);
     try {
-      return await callApiOnce(payload, false);
+      return await requestOnce(path, payload, false);
     } catch (err) {
       // An expired login token is refreshed once before giving up.
-      if (err instanceof ApiError && err.status === 401) return callApiOnce(payload, true);
+      if (err instanceof ApiError && err.status === 401) return requestOnce(path, payload, true);
       throw err;
     }
   }
 
-  async function callApiOnce(payload, freshToken) {
+  async function requestOnce(path, payload, freshToken) {
     const token = await Auth.getToken(freshToken);
     const ctl = new AbortController();
     const timer = setTimeout(() => ctl.abort(), REQUEST_TIMEOUT_MS);
     try {
-      const res = await fetch(API_BASE + "/api/route", {
-        method: "POST",
-        mode: "cors",
-        credentials: "omit",
-        cache: "no-store",
-        redirect: "error",
-        referrerPolicy: "no-referrer",
-        headers: { "Content-Type": "application/json", "Authorization": "Bearer " + token },
-        body: JSON.stringify(payload),
-        signal: ctl.signal,
-      });
+      let res;
+      try {
+        res = await fetch(API_BASE + path, {
+          method: "POST",
+          mode: "cors",
+          credentials: "omit",
+          cache: "no-store",
+          redirect: "error",
+          referrerPolicy: "no-referrer",
+          headers: { "Content-Type": "application/json", "Authorization": "Bearer " + token },
+          body: JSON.stringify(payload),
+          signal: ctl.signal,
+        });
+      } catch (e) {
+        if (e && e.name === "AbortError") throw e;
+        throw new ApiError(0, "network", "", 0); // nothing answered: the backend is down, asleep or the address is wrong
+      }
       let body = null;
       try { body = await res.json(); } catch (e) { body = null; }
       if (!res.ok) {
@@ -235,10 +232,38 @@
           parseInt(res.headers.get("Retry-After") || "", 10) || 0
         );
       }
-      return cleanResponse(body);
+      return body;
     } finally {
       clearTimeout(timer);
     }
+  }
+
+  async function callApi(payload) {
+    return cleanResponse(await request("/api/route", payload));
+  }
+
+  // ---------- "API not connected" popup ----------
+  const API_POPUP = {
+    maps: "The Google Maps API is not connected at the backend, so traffic cannot be checked yet. If you run this site, add GOOGLE_MAPS_API_KEY to the backend settings. Otherwise, please try again later.",
+    unreachable: "The backend cannot be reached. It may be starting up, so wait a minute and try again. If you run this site, check that API_BASE_URL points to your deployed backend.",
+    no_address: "This site has no backend address yet. If you run this site, set API_BASE_URL and deploy again (see the README).",
+  };
+
+  // Which popup (if any) an error calls for.
+  function offlineKind(err) {
+    if (!(err instanceof ApiError)) return null;
+    if (err.code === "api_not_connected") return "maps";
+    if (err.code === "network") return "unreachable";
+    if (err.code === "not_configured") return "no_address";
+    return null;
+  }
+
+  function showApiPopup(kind) {
+    const dlg = $("#api-dialog");
+    $("#api-detail").textContent = API_POPUP[kind] || API_POPUP.unreachable;
+    if (dlg.open) return;
+    if (typeof dlg.showModal === "function") dlg.showModal();
+    else dlg.setAttribute("open", "");
   }
 
   function friendlyError(err) {
@@ -251,6 +276,16 @@
         case "no_route":
         case "invalid_request":
           return err.serverMessage || "That request could not be completed.";
+        case "api_not_connected":
+        case "network":
+        case "not_configured":
+          return "API not connected at the backend.";
+        case "account_blocked":
+          return "Your account has been blocked. Contact the site administrator.";
+        case "forbidden":
+          return "Only administrators can do this.";
+        case "not_found":
+          return err.serverMessage || "That could not be found.";
         case "unauthorized":
           return "Your session has ended. Please sign in again.";
         case "email_not_verified":
@@ -294,6 +329,17 @@
       // A login that no longer works sends the person back to the sign-in page.
       if ((err instanceof ApiError && err.status === 401) || (err && err.code === "auth/no-current-user")) {
         signOutWithMessage("Your session has ended. Please sign in again.");
+        return;
+      }
+      if (err instanceof ApiError && err.code === "account_blocked") {
+        signOutWithMessage(friendlyError(err));
+        return;
+      }
+      const kind = offlineKind(err);
+      if (kind) {
+        showError("API not connected at the backend.");
+        showApiPopup(kind);
+        stopAuto();
         return;
       }
       showError(friendlyError(err));
@@ -607,8 +653,8 @@
   function onSubmit(e) {
     e.preventDefault();
     showError("");
-    if (!CONFIGURED) { showApiPopup(); return; }
     if (!userInfo) return;
+    if (!CONFIGURED) { showError("API not connected at the backend."); showApiPopup("no_address"); return; }
 
     const from = cleanPlace($("#from").value);
     const to = cleanPlace($("#to").value);
@@ -663,19 +709,49 @@
   }
 
   // Login page --------------------------------------------------------------
-  let mode = "signin";
+  let mode = "signin";      // "signin" | "signup" (users only)
+  let loginAs = "user";     // which tab is selected: "user" | "admin"
+  let intent = readIntent(); // what the person chose when they signed in (kept for this tab, so a reload does not forget it)
+
+  function readIntent() {
+    try {
+      const v = window.sessionStorage.getItem("tc.intent");
+      return v === "admin" || v === "user" ? v : null;
+    } catch (e) { return null; }
+  }
+
+  function saveIntent(v) {
+    intent = v;
+    try {
+      if (v) window.sessionStorage.setItem("tc.intent", v);
+      else window.sessionStorage.removeItem("tc.intent");
+    } catch (e) { /* storage blocked: the choice just is not remembered across a reload */ }
+  }
 
   function setMode(m) {
     mode = m;
     const up = m === "signup";
-    $("#login-title").textContent = up ? "Create your account" : "Sign in";
-    $("#login-sub").textContent = up ? "We will email you a link to confirm your address." : "Use your Google account or your email.";
+    const admin = loginAs === "admin";
+    $("#login-title").textContent = up ? "Create your account" : admin ? "Admin sign in" : "Sign in";
+    $("#login-sub").textContent = up
+      ? "We will email you a link to confirm your address."
+      : admin
+        ? "For site administrators. Admin access is granted by the site owner, so there is no sign-up here."
+        : "Use your Google account or your email.";
     $("#email-submit").textContent = up ? "Create account" : "Sign in";
     $("#toggle-mode").textContent = up ? "I already have an account" : "Create an account";
+    $("#toggle-mode").hidden = admin;
     $("#password").autocomplete = up ? "new-password" : "current-password";
     $("#forgot").hidden = up;
     setText("#login-error", "");
     setText("#login-msg", "");
+  }
+
+  function setLoginAs(role) {
+    loginAs = role === "admin" ? "admin" : "user";
+    $("#as-user").setAttribute("aria-pressed", String(loginAs === "user"));
+    $("#as-admin").setAttribute("aria-pressed", String(loginAs === "admin"));
+    setMode(loginAs === "admin" ? "signin" : mode);
   }
 
   function setLoginBusy(busy) {
@@ -683,6 +759,7 @@
   }
 
   async function guarded(fn) {
+    saveIntent(loginAs); // the sign-in result arrives later; remember which door the person used
     setText("#login-error", "");
     setText("#login-msg", "");
     setLoginBusy(true);
@@ -694,6 +771,8 @@
   function validEmail(v) { return v.length <= 254 && /^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(v); }
 
   function initLogin() {
+    $("#as-user").addEventListener("click", () => setLoginAs("user"));
+    $("#as-admin").addEventListener("click", () => setLoginAs("admin"));
     $("#google-btn").addEventListener("click", () => guarded(() => Auth.signInWithGoogle()));
 
     $("#email-form").addEventListener("submit", (e) => {
@@ -750,6 +829,9 @@
 
   // Who is signed in -----------------------------------------------------------
   let pendingLoginMsg = "";
+  let sessionSeq = 0;      // lets a slow reply from an old sign-in be ignored
+  let currentRole = "user";
+  const BLOCKED_MSG = "Your account has been blocked. Contact the site administrator.";
 
   function signOutWithMessage(msg) {
     pendingLoginMsg = msg; // shown by onUser(null) once the sign-out has taken effect
@@ -758,6 +840,7 @@
 
   function resetAppState() {
     runToken++;               // ignore any request still in flight
+    adminSeq++;
     clearTimer();
     state.routes = []; state.forecast = null; state.selected = 0; state.from = ""; state.to = ""; state.depart = null; state.loaded = false;
     $("#results").hidden = true;
@@ -771,37 +854,96 @@
     setBusy(false);
     data = emptyData();
     storeKey = null;
+    // admin console
+    currentRole = "user";
+    $("#nav").hidden = true;
+    $("#role-tag").hidden = true;
+    $("#admin-status").replaceChildren();
+    $("#users-body").replaceChildren();
+    ["#adm-calls", "#adm-users", "#adm-blocked"].forEach((sel) => { $(sel).textContent = "-"; });
+    ["#adm-calls-sub", "#adm-admins", "#users-note"].forEach((sel) => { $(sel).textContent = ""; });
+    setText("#admin-error", "");
+    showPane("check");
   }
 
-  function enterApp(u) {
-    resetAppState();
+  function showPane(name) {
+    const admin = name === "admin" && currentRole === "admin";
+    $("#pane-admin").hidden = !admin;
+    $("#pane-check").hidden = admin;
+    $("#nav-check").setAttribute("aria-current", admin ? "false" : "page");
+    $("#nav-admin").setAttribute("aria-current", admin ? "page" : "false");
+    if (admin) loadAdmin();
+  }
+
+  function enterApp(u, me) {
     storeKey = STORE_PREFIX + String(u.uid).replace(/[^A-Za-z0-9_-]/g, "").slice(0, 128);
     data = loadData(storeKey);
+    currentRole = me.role;
     $("#account-email").textContent = u.email;
+    $("#nav").hidden = me.role !== "admin";
+    $("#role-tag").hidden = me.role !== "admin";
     $("#auto").checked = data.auto;
     applyAuto();
     refreshMine();
     showView("app-view");
+    // An administrator lands on the console unless they signed in as a user.
+    showPane(me.role === "admin" && intent !== "user" ? "admin" : "check");
   }
 
-  // No backend and no Firebase: the site opens straight to the form; Check shows the "API not connected" pop-up.
-  function enterDemo() {
+  function cleanMe(b) {
+    if (!b || typeof b !== "object" || (b.role !== "admin" && b.role !== "user")) throw new Error("bad response");
+    return { role: b.role, mapsConnected: b.mapsConnected === true };
+  }
+
+  // After Firebase says who signed in, ask the backend what role they have and whether the API is connected.
+  async function startSession(u) {
+    const seq = ++sessionSeq;
     resetAppState();
-    storeKey = STORE_PREFIX + "demo";
-    data = loadData(storeKey);
-    data.auto = false;
-    $(".account").hidden = true;
-    $("#auto").checked = false;
-    $("#auto").disabled = true;
-    refreshMine();
-    showView("app-view");
+    $("#boot").textContent = "Checking your account...";
+    showView("boot");
+
+    let me = null;
+    let failure = null;
+    try { me = cleanMe(await request("/api/me", {})); }
+    catch (err) { failure = err; }
+    if (seq !== sessionSeq) return; // signed out, or another account signed in, in the meantime
+
+    if (failure) {
+      const code = failure instanceof ApiError ? failure.code : failure && failure.code;
+      if (code === "account_blocked") { signOutWithMessage(BLOCKED_MSG); return; }
+      if ((failure instanceof ApiError && (failure.status === 401 || code === "email_not_verified")) || code === "auth/no-current-user") {
+        signOutWithMessage("Your session has ended. Please sign in again.");
+        return;
+      }
+      const kind = offlineKind(failure);
+      if (intent === "admin") {
+        // Admin rights can only be confirmed by the backend, so without it there is no admin sign-in.
+        signOutWithMessage(kind ? "Admin sign-in needs the backend, and it is not connected." : friendlyError(failure));
+        if (kind) showApiPopup(kind);
+        return;
+      }
+      // A normal user may still see the app shell; every check will say what is wrong.
+      enterApp(u, { role: "user", mapsConnected: false });
+      if (kind) { showError("API not connected at the backend."); showApiPopup(kind); }
+      else showError(friendlyError(failure));
+      return;
+    }
+
+    if (intent === "admin" && me.role !== "admin") {
+      signOutWithMessage("This account is not an administrator. Choose the User tab to sign in as a user.");
+      return;
+    }
+    enterApp(u, me);
+    if (!me.mapsConnected) { showError("API not connected at the backend."); showApiPopup("maps"); }
   }
 
   function onUser(u) {
     userInfo = u;
     if (!u) {
+      sessionSeq++;
       resetAppState();
-      setMode("signin");
+      saveIntent(null);
+      setLoginAs("user");
       setText("#login-msg", pendingLoginMsg);
       pendingLoginMsg = "";
       $("#password").value = "";
@@ -809,6 +951,7 @@
       return;
     }
     if (!u.verified) {
+      sessionSeq++;
       resetAppState();
       $("#verify-email").textContent = u.email;
       setText("#verify-msg", ""); setText("#verify-error", "");
@@ -816,15 +959,143 @@
       return;
     }
     setText("#login-msg", "");
-    enterApp(u);
+    startSession(u);
+  }
+
+  // Admin console ------------------------------------------------------------------
+  let adminSeq = 0;
+  const UID_RE = /^[A-Za-z0-9_:.-]{1,128}$/;
+
+  function cleanOverview(b) {
+    if (!b || typeof b !== "object" || !b.api || !b.usage || !b.users) throw new Error("bad response");
+    const used = num(b.usage.googleCallsToday, 0, 1e9);
+    const limit = num(b.usage.dailyLimit, 0, 1e9);
+    const total = num(b.users.total, 0, 1e9);
+    const blocked = num(b.users.blocked, 0, 1e9);
+    if (used === null || limit === null || total === null || blocked === null) throw new Error("bad response");
+    return { maps: b.api.maps === true, database: b.api.database === true, used: used, limit: limit, total: total, blocked: blocked, admins: num(b.admins, 0, 1e6) || 0 };
+  }
+
+  function cleanUsers(b) {
+    if (!b || !Array.isArray(b.users)) throw new Error("bad response");
+    const users = b.users.slice(0, 200).map((u) => {
+      if (!u || typeof u !== "object" || typeof u.uid !== "string" || !UID_RE.test(u.uid)) return null;
+      const t = typeof u.lastSeenAt === "string" ? Date.parse(u.lastSeenAt) : NaN;
+      return {
+        uid: u.uid,
+        email: cleanPlace(typeof u.email === "string" ? u.email : "").slice(0, 254),
+        lastSeen: isFinite(t) ? new Date(t) : null,
+        requests: num(u.requests, 0, 1e9) || 0,
+        blocked: u.blocked === true,
+        isAdmin: u.isAdmin === true,
+      };
+    }).filter(Boolean);
+    return { users: users, truncated: b.truncated === true };
+  }
+
+  function statusRow(name, ok, okText, badText, hint) {
+    const li = el("li", {}, [
+      el("span", { class: "name", text: name }),
+      el("span", { class: "state " + (ok ? "ok" : "bad"), text: ok ? okText : badText }),
+    ]);
+    if (!ok && hint) li.appendChild(el("span", { class: "hint", text: hint }));
+    return li;
+  }
+
+  function renderOverview(o) {
+    const list = $("#admin-status");
+    list.replaceChildren(
+      statusRow("Backend", true, "Connected", "Not connected"),
+      statusRow("Database", o.database, "Connected", "Not connected", "Check MONGODB_URI at the backend."),
+      statusRow("Google Maps API", o.maps, "Connected", "Not connected", "Add GOOGLE_MAPS_API_KEY to the backend settings and redeploy it. Until then, nobody can check traffic.")
+    );
+    $("#adm-calls").textContent = o.used + " of " + o.limit;
+    $("#adm-calls-sub").textContent = "Resets daily at midnight UTC";
+    $("#adm-users").textContent = String(o.total);
+    $("#adm-admins").textContent = o.admins === 1 ? "1 administrator" : o.admins + " administrators";
+    $("#adm-blocked").textContent = String(o.blocked);
+  }
+
+  function fmtWhen(d) {
+    return d ? d.toLocaleString([], { dateStyle: "medium", timeStyle: "short" }) : "Unknown";
+  }
+
+  function renderUsers(r) {
+    const body = $("#users-body");
+    body.replaceChildren();
+    if (!r.users.length) {
+      body.appendChild(el("tr", {}, [el("td", { colspan: "5", class: "muted", text: "Nobody has signed in yet." })]));
+    }
+    r.users.forEach((u) => {
+      const tag = u.isAdmin ? el("span", { class: "tag admin", text: "Admin" })
+        : u.blocked ? el("span", { class: "tag blocked", text: "Blocked" })
+        : el("span", { class: "tag active", text: "Active" });
+      const act = el("td", { class: "act" });
+      if (!u.isAdmin) {
+        const btn = el("button", { type: "button", class: "sm", text: u.blocked ? "Unblock" : "Block" });
+        btn.addEventListener("click", () => setBlocked(u, !u.blocked, btn));
+        act.appendChild(btn);
+      }
+      body.appendChild(el("tr", {}, [
+        el("td", { class: "email", text: u.email || "(no email)" }),
+        el("td", { text: fmtWhen(u.lastSeen) }),
+        el("td", { class: "num", text: String(u.requests) }),
+        el("td", {}, [tag]),
+        act,
+      ]));
+    });
+    $("#users-note").textContent = r.truncated ? "Showing the 200 most recently active people." : "";
+  }
+
+  function adminFailure(err) {
+    if ((err instanceof ApiError && err.status === 401) || (err && err.code === "auth/no-current-user")) {
+      signOutWithMessage("Your session has ended. Please sign in again.");
+      return;
+    }
+    if (err instanceof ApiError && err.code === "account_blocked") { signOutWithMessage(BLOCKED_MSG); return; }
+    const kind = offlineKind(err);
+    if (kind) showApiPopup(kind);
+    setText("#admin-error", friendlyError(err));
+  }
+
+  async function loadAdmin() {
+    const seq = ++adminSeq;
+    setText("#admin-error", "");
+    $("#admin-refresh").disabled = true;
+    try {
+      const both = await Promise.all([request("/api/admin/overview", {}), request("/api/admin/users", {})]);
+      if (seq !== adminSeq) return;
+      renderOverview(cleanOverview(both[0]));
+      renderUsers(cleanUsers(both[1]));
+    } catch (err) {
+      if (seq !== adminSeq) return;
+      adminFailure(err);
+    } finally {
+      if (seq === adminSeq) $("#admin-refresh").disabled = false;
+    }
+  }
+
+  async function setBlocked(u, blocked, btn) {
+    if (blocked && !window.confirm("Block " + (u.email || "this person") + "? They will not be able to use the traffic checker until you unblock them.")) return;
+    btn.disabled = true;
+    try {
+      await request("/api/admin/block", { uid: u.uid, blocked: blocked });
+      await loadAdmin();
+    } catch (err) {
+      btn.disabled = false;
+      adminFailure(err);
+    }
+  }
+
+  function initAdmin() {
+    $("#admin-refresh").addEventListener("click", loadAdmin);
+    $("#nav-check").addEventListener("click", () => showPane("check"));
+    $("#nav-admin").addEventListener("click", () => showPane("admin"));
   }
 
   // The app itself --------------------------------------------------------------
   function initApp() {
     $("#search").addEventListener("submit", onSubmit);
-    $("#popup-ok").addEventListener("click", hideApiPopup);
-    $("#api-popup").addEventListener("click", (e) => { if (e.target === $("#api-popup")) hideApiPopup(); });
-    document.addEventListener("keydown", (e) => { if (e.key === "Escape" && !$("#api-popup").hidden) hideApiPopup(); });
 
     $("#sign-out").addEventListener("click", () => { Auth.signOut(); });
 
@@ -884,20 +1155,24 @@
     initLogin();
     initVerify();
     initApp();
-
-    if (Auth.status === "unconfigured" && !CONFIGURED) { enterDemo(); return; }
+    initAdmin();
+    $("#api-close").addEventListener("click", () => $("#api-dialog").close());
+    setLoginAs("user");
 
     if (Auth.status !== "ready") {
       // Firebase is not set up, or its script could not load: say so instead of showing a dead page.
+      // Nobody can use the app in this state, because there is no way to sign in.
       const off = Auth.status === "unconfigured"
         ? "Sign-in is not set up yet. If you own this site, add your Firebase settings (see the README)."
         : "The sign-in service could not load. Check your connection and reload the page.";
-      ["#google-btn", "#email-submit", "#toggle-mode", "#forgot"].forEach((sel) => { $(sel).disabled = true; });
+      ["#google-btn", "#email-submit", "#toggle-mode", "#forgot", "#as-user", "#as-admin"].forEach((sel) => { $(sel).disabled = true; });
       setText("#login-error", off);
       showView("login-view");
+      if (!CONFIGURED) showApiPopup("no_address");
       return;
     }
     Auth.onChange(onUser);
+    if (!CONFIGURED) showApiPopup("no_address");
   }
 
   // Firebase loads asynchronously; wait until it is ready (or known to have failed).

@@ -110,6 +110,11 @@ input[type="checkbox"] { accent-color: var(--ink); width: 16px; height: 16px; }
   border: 1px solid var(--line);
 }
 
+/* ---------- user / admin switch on the sign-in page ---------- */
+.seg { display: grid; grid-template-columns: 1fr 1fr; gap: 2px; padding: 3px; margin-bottom: 22px; border: 1px solid var(--line-strong); border-radius: 10px; }
+.seg-btn { border: 0; border-radius: 7px; background: transparent; padding: 8px 12px; color: var(--muted); }
+.seg-btn[aria-pressed="true"], .seg-btn[aria-pressed="true"]:hover:not([disabled]) { background: var(--accent); color: var(--accent-text); font-weight: 600; }
+
 /* ---------- sign in ---------- */
 .login { min-height: 100vh; display: grid; grid-template-columns: minmax(0, 1fr); }
 .login-hero { padding: 28px 20px 24px; border-bottom: 1px solid var(--line); display: flex; flex-direction: column; gap: 12px; justify-content: center; }
@@ -139,10 +144,45 @@ input[type="checkbox"] { accent-color: var(--ink); width: 16px; height: 16px; }
 
 /* ---------- app shell ---------- */
 .bar { border-bottom: 1px solid var(--line); }
-.bar-in { display: flex; justify-content: space-between; align-items: center; gap: 12px; padding-top: 12px; padding-bottom: 12px; }
+.bar-in { display: flex; flex-wrap: wrap; justify-content: space-between; align-items: center; gap: 8px 16px; padding-top: 12px; padding-bottom: 12px; }
 .account { display: flex; align-items: center; gap: 12px; min-width: 0; }
 .account .muted { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; min-width: 0; }
 .account button { flex: none; }
+
+.sr-only { position: absolute; width: 1px; height: 1px; overflow: hidden; clip: rect(0 0 0 0); white-space: nowrap; }
+
+.nav { display: flex; gap: 4px; }
+.nav button { border: 0; background: transparent; padding: 6px 12px; border-radius: 8px; color: var(--muted); }
+.nav button[aria-current="page"] { background: var(--soft); color: var(--ink); font-weight: 600; }
+
+.tag { display: inline-block; padding: 2px 10px; border-radius: 999px; border: 1px solid var(--line-strong); font-size: .8rem; font-weight: 600; white-space: nowrap; }
+.tag.admin { background: var(--accent); border-color: var(--accent); color: var(--accent-text); }
+.tag.active { color: var(--ok); border-color: #b7dcc2; }
+.tag.blocked { color: var(--severe); border-color: #f0c4c1; background: #fdf1f0; }
+
+/* ---------- admin console ---------- */
+.status-list { list-style: none; margin: 4px 0 0; padding: 0; display: grid; gap: 10px; }
+.status-list li { display: grid; grid-template-columns: auto 1fr; gap: 2px 12px; align-items: baseline; }
+.status-list .name { font-weight: 600; }
+.status-list .state { font-weight: 600; }
+.status-list .state.ok { color: var(--ok); }
+.status-list .state.bad { color: var(--severe); }
+.status-list .hint { grid-column: 1 / -1; color: var(--muted); font-size: .88rem; }
+
+.table-wrap { position: relative; overflow-x: auto; margin-top: 8px; } /* position: keeps the hidden .sr-only label inside the scroller */
+table { width: 100%; border-collapse: collapse; font-size: .92rem; }
+th, td { text-align: left; padding: 10px 12px 10px 0; border-bottom: 1px solid var(--line); vertical-align: middle; }
+th { font-weight: 600; color: var(--muted); font-size: .85rem; white-space: nowrap; }
+td.email { word-break: break-all; min-width: 12em; }
+td.num, th.num { text-align: right; }
+button.sm { padding: 5px 12px; font-size: .85rem; }
+td.act { text-align: right; white-space: nowrap; padding-right: 0; }
+
+/* ---------- "API not connected" popup ---------- */
+dialog { border: 1px solid var(--line-strong); border-radius: 12px; padding: 24px; width: calc(100% - 32px); max-width: 440px; background: #fff; color: var(--ink); box-shadow: 0 12px 40px rgba(32, 33, 36, .2); }
+dialog::backdrop { background: rgba(32, 33, 36, .4); }
+dialog h2 { margin: 0 0 10px; font-size: 1.2rem; letter-spacing: -.01em; }
+dialog p { margin: 0 0 18px; color: var(--muted); }
 
 main.app { display: grid; grid-template-columns: minmax(0, 1fr); gap: 16px; padding-top: 24px; padding-bottom: 8px; }
 .intro h1 { margin: 0 0 4px; font-size: 1.9rem; letter-spacing: -.025em; line-height: 1.15; }
@@ -256,28 +296,3 @@ main.app { display: grid; grid-template-columns: minmax(0, 1fr); gap: 16px; padd
 @media (prefers-reduced-motion: reduce) {
   #meter-fill { transition: none; }
 }
-
-/* ---------- "API not connected" pop-up ---------- */
-.popup {
-  position: fixed;
-  inset: 0;
-  z-index: 100;
-  display: flex;
-  align-items: center;
-  justify-content: center;
-  padding: 20px;
-  background: rgba(32, 33, 36, 0.45);
-}
-.popup[hidden] { display: none; }
-.popup-box {
-  width: 100%;
-  max-width: 380px;
-  padding: 24px;
-  border-radius: 14px;
-  background: #ffffff;
-  border: 1px solid var(--line-strong);
-  box-shadow: 0 12px 40px rgba(0, 0, 0, 0.2);
-}
-.popup-box h2 { margin: 0 0 8px; font-size: 1.2rem; }
-.popup-box p { margin: 0 0 18px; color: var(--muted); }
-.popup-box button { width: 100%; }

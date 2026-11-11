@@ -6,6 +6,10 @@
 //
 // - Fills in the backend address and the Firebase web settings. None of these is the Google Maps key:
 //   that key exists only on the backend and must never be given to this script.
+// - Missing settings do NOT stop the build, so the site can always be deployed. The site then shows
+//   "API not connected at the backend" (no backend address) or "Sign-in is not set up yet" (no Firebase),
+//   and nobody can use it, because there is no way to sign in.
+// - A setting that is present but malformed, or half of the Firebase settings, DOES stop the build.
 // - Refuses to build if the output contains anything that looks like a secret.
 import { cpSync, existsSync, readFileSync, readdirSync, rmSync, statSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
@@ -20,32 +24,34 @@ function fail(msg) {
 
 const env = (name) => (process.env[name] || "").trim();
 
-// ---- backend address ----
-// API_BASE_URL is optional. Without it the site still builds and deploys; the page then shows an
-// "API not connected" pop-up when someone tries to run a check.
+const warnings = [];
+const warn = (msg) => {
+  warnings.push(msg);
+  console.warn((process.env.GITHUB_ACTIONS ? "::warning::" : "Warning: ") + msg);
+};
+
+// ---- backend address (optional) ----
 const base = env("API_BASE_URL").replace(/\/+$/, "");
-if (base) {
+if (!base) {
+  warn("API_BASE_URL is not set. The site will show \"API not connected at the backend\" until you set it to your deployed backend's address and deploy again.");
+} else {
   let url;
   try { url = new URL(base); } catch { fail("API_BASE_URL is not a valid URL."); }
   const isLocal = url.hostname === "localhost" || url.hostname === "127.0.0.1";
   if (url.protocol !== "https:" && !(url.protocol === "http:" && isLocal)) fail("API_BASE_URL must use https (http is only allowed for localhost).");
   if (url.origin !== base) fail("API_BASE_URL must be just the origin, with no path, query or trailing slash content (got " + base + ").");
-} else {
-  console.warn("API_BASE_URL is not set: building without a backend (the site will show \"API not connected\").");
 }
 
-// ---- Firebase web settings (public identifiers, but validated so a typo cannot ship) ----
+// ---- Firebase web settings (public identifiers; all four or none) ----
 const fbKey = env("FIREBASE_API_KEY");
 const fbDomain = env("FIREBASE_AUTH_DOMAIN");
 const fbProject = env("FIREBASE_PROJECT_ID");
 const fbApp = env("FIREBASE_APP_ID");
-// Demo mode: no backend and no Firebase settings at all. The site deploys without sign-in and shows
-// the "API not connected" pop-up on Check. As soon as a backend address is set, sign-in is required.
-const demo = !base && !(fbKey || fbDomain || fbProject || fbApp);
-if (demo) {
-  console.warn("No Firebase settings either: building in demo mode (no sign-in, no backend).");
+const fbGiven = [fbKey, fbDomain, fbProject, fbApp].filter(Boolean).length;
+if (fbGiven === 0) {
+  warn("No Firebase settings were given. The site will deploy, but nobody can sign in, so nobody can use it, until you add FIREBASE_API_KEY, FIREBASE_AUTH_DOMAIN, FIREBASE_PROJECT_ID and FIREBASE_APP_ID.");
 } else {
-  if (!fbKey) fail("FIREBASE_API_KEY is not set (Firebase console > Project settings > Your apps > apiKey).");
+  if (fbGiven < 4) fail("Only some of the four Firebase settings are set. Set all of FIREBASE_API_KEY, FIREBASE_AUTH_DOMAIN, FIREBASE_PROJECT_ID, FIREBASE_APP_ID, or none of them.");
   if (!/^AIza[0-9A-Za-z_-]{35}$/.test(fbKey)) fail("FIREBASE_API_KEY does not look like a Firebase web API key.");
   if (!/^[a-z0-9][a-z0-9.-]{3,60}\.[a-z]{2,}$/.test(fbDomain)) fail("FIREBASE_AUTH_DOMAIN must be a host name such as my-app.firebaseapp.com (no https://, no slash).");
   if (!/^[a-z][a-z0-9-]{4,28}[a-z0-9]$/.test(fbProject)) fail("FIREBASE_PROJECT_ID must be your Firebase project id (lowercase letters, digits, hyphens).");
@@ -60,7 +66,7 @@ for (const name of ["GOOGLE_MAPS_API_KEY", "MONGODB_URI", "IP_HASH_SECRET"]) {
 const TOKENS = {
   __API_BASE__: base,
   __FIREBASE_API_KEY__: fbKey,
-  __FIREBASE_AUTH_DOMAIN__: demo ? "firebase-not-configured.invalid" : fbDomain,
+  __FIREBASE_AUTH_DOMAIN__: fbDomain,
   __FIREBASE_PROJECT_ID__: fbProject,
   __FIREBASE_APP_ID__: fbApp,
 };
@@ -72,6 +78,9 @@ cpSync(SRC, OUT, { recursive: true });
 for (const f of ["index.html", "config.js"]) {
   const p = join(OUT, f);
   let text = readFileSync(p, "utf8");
+  // Drop the allowances for anything that is not configured, so the policy stays as tight as possible.
+  if (!base) text = text.split("__API_BASE__ ").join("");
+  if (!fbDomain) text = text.split("https://__FIREBASE_AUTH_DOMAIN__ ").join("");
   for (const [token, value] of Object.entries(TOKENS)) text = text.split(token).join(value);
   writeFileSync(p, text);
 }
@@ -82,7 +91,8 @@ for (const f of ["index.html", "config.js"]) {
 const OTHER_SECRETS = [
   [/mongodb(\+srv)?:\/\//i, "a MongoDB connection string"],
   [/-----BEGIN [A-Z ]*PRIVATE KEY-----/, "a private key"],
-  [/IP_HASH_SECRET|GOOGLE_MAPS_API_KEY/, "a secret variable name"],
+  // The name GOOGLE_MAPS_API_KEY may appear in help text; an actual key is caught by the AIza scan above.
+  [/IP_HASH_SECRET/, "a secret variable name"],
 ];
 
 function* walk(dir) {
@@ -105,4 +115,4 @@ for (const file of walk(OUT)) {
   }
 }
 
-console.log(`Site built in ${OUT}/ (backend ${base || "none"}, Firebase project ${fbProject || "none"})`);
+console.log(`Site built in ${OUT}/ (backend: ${base || "NOT SET"}, Firebase project: ${fbProject || "NOT SET"})` + (warnings.length ? `, ${warnings.length} warning(s)` : ""));

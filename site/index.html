@@ -41,6 +41,11 @@
     </section>
 
     <section class="login-panel" aria-labelledby="login-title">
+      <div class="seg" role="group" aria-label="Sign in as">
+        <button type="button" id="as-user" class="seg-btn" aria-pressed="true">User</button>
+        <button type="button" id="as-admin" class="seg-btn" aria-pressed="false">Admin</button>
+      </div>
+
       <h2 id="login-title">Sign in</h2>
       <p class="muted" id="login-sub">Use your Google account or your email.</p>
 
@@ -91,14 +96,69 @@
     <header class="bar">
       <div class="wrap bar-in">
         <p class="wordmark">Traffic Checker</p>
+        <nav id="nav" class="nav" aria-label="Sections" hidden>
+          <button type="button" id="nav-check" aria-current="page">Traffic checker</button>
+          <button type="button" id="nav-admin">Admin console</button>
+        </nav>
         <div class="account">
+          <span id="role-tag" class="tag admin" hidden>Admin</span>
           <span id="account-email" class="muted"></span>
           <button type="button" id="sign-out" class="linkish">Sign out</button>
         </div>
       </div>
     </header>
 
-    <main class="wrap app">
+    <!-- ===== Admin console (administrators only; the backend enforces this too) ===== -->
+    <main id="pane-admin" class="wrap app" hidden>
+      <div class="intro">
+        <h1>Admin console</h1>
+        <p class="sub">Check that the service is connected and control who can use it.</p>
+      </div>
+
+      <section class="card">
+        <div class="map-head">
+          <h2>Service status</h2>
+          <button type="button" id="admin-refresh">Refresh</button>
+        </div>
+        <ul id="admin-status" class="status-list"></ul>
+      </section>
+
+      <div class="stats">
+        <div class="card stat">
+          <span class="label">Google lookups today</span>
+          <strong id="adm-calls">-</strong>
+          <span class="muted" id="adm-calls-sub"></span>
+        </div>
+        <div class="card stat">
+          <span class="label">People who signed in</span>
+          <strong id="adm-users">-</strong>
+          <span class="muted" id="adm-admins"></span>
+        </div>
+        <div class="card stat">
+          <span class="label">Blocked</span>
+          <strong id="adm-blocked">-</strong>
+          <span class="muted">Cannot use the traffic checker</span>
+        </div>
+      </div>
+
+      <section class="card">
+        <h2>People</h2>
+        <p class="muted">Everyone who has signed in, newest activity first. Blocking takes effect on their very next request.</p>
+        <div class="table-wrap">
+          <table id="users-table">
+            <thead>
+              <tr><th scope="col">Email</th><th scope="col">Last active</th><th scope="col">Checks</th><th scope="col">Status</th><th scope="col"><span class="sr-only">Action</span></th></tr>
+            </thead>
+            <tbody id="users-body"></tbody>
+          </table>
+        </div>
+        <p id="users-note" class="muted small-print"></p>
+      </section>
+
+      <p id="admin-error" class="error" role="alert" hidden></p>
+    </main>
+
+    <main id="pane-check" class="wrap app">
       <div class="intro">
         <h1>Check traffic between two places</h1>
         <p class="sub">See how bad the jam is, how long the drive takes now, and how long it takes once the jam clears.</p>
@@ -216,14 +276,12 @@
     </footer>
   </div>
 
-  <!-- Pop-up shown when the backend API is not connected -->
-  <div id="api-popup" class="popup" hidden>
-    <div class="popup-box" role="alertdialog" aria-modal="true" aria-labelledby="popup-title" aria-describedby="popup-text">
-      <h2 id="popup-title">API not connected</h2>
-      <p id="popup-text">This site is not connected to its traffic API yet, so it cannot check traffic right now.</p>
-      <button type="button" id="popup-ok" class="primary">OK</button>
-    </div>
-  </div>
+  <!-- Shown when the backend, or the Google Maps API behind it, is not connected -->
+  <dialog id="api-dialog" aria-labelledby="api-title">
+    <h2 id="api-title">API not connected at the backend</h2>
+    <p id="api-detail"></p>
+    <button type="button" id="api-close" class="primary">Close</button>
+  </dialog>
 
   <script src="config.js"></script>
   <!-- Modules run in this order, so Firebase is ready (or known to have failed) before app.js starts. -->

@@ -2,6 +2,8 @@
 //   route_cache  - sanitised Google responses, keyed by a SHA-256 hash (no raw places stored)
 //   rate_limits  - per-client and per-account counters, keyed by an HMAC (no raw IPs or user ids stored)
 //   quota        - one document per UTC day counting Google calls (spend cap)
+//   users        - one document per signed-in person (id, email, last seen, request count, blocked).
+//                  No TTL: the admin console needs it, and blocking must not silently expire.
 //
 // Every _id is checked against a strict pattern before it reaches a query, so user-supplied
 // text can never become a Mongo operator (NoSQL injection).
@@ -9,6 +11,8 @@
 const CACHE_KEY = /^[a-f0-9]{64}$/;
 const LIMIT_ID = /^[a-f0-9]{32}:\d{1,6}:\d{1,10}$/;
 const QUOTA_ID = /^quota:\d{4}-\d{2}-\d{2}$/;
+const UID = /^[A-Za-z0-9_:.-]{1,128}$/;
+const DAY = /^\d{4}-\d{2}-\d{2}$/;
 
 function assertShape(re, v) {
   if (typeof v !== "string" || !re.test(v)) throw new Error("invalid store key");
@@ -31,10 +35,23 @@ export async function createMongoStore({ uri, dbName, now = Date.now }) {
   const cache = db.collection("route_cache");
   const limits = db.collection("rate_limits");
   const quota = db.collection("quota");
+  const users = db.collection("users");
 
   await Promise.all(
     [cache, limits, quota].map((c) => c.createIndex({ expiresAt: 1 }, { expireAfterSeconds: 0 }))
   );
+
+  await users.createIndex({ lastSeenAt: -1 });
+
+  const publicUser = (d) => ({
+    uid: d._id,
+    email: typeof d.email === "string" ? d.email : "",
+    provider: typeof d.provider === "string" ? d.provider : "",
+    createdAt: d.createdAt,
+    lastSeenAt: d.lastSeenAt,
+    requests: Number.isInteger(d.requests) ? d.requests : 0,
+    blocked: d.blocked === true,
+  });
 
   return {
     async init() {},
@@ -85,6 +102,67 @@ export async function createMongoStore({ uri, dbName, now = Date.now }) {
         count: n,
         retryAfterSec: Math.max(1, Math.ceil((windowIdx + 1) * windowSec - nowMs / 1000)),
       };
+    },
+
+    async touchUser({ uid, email, provider }, { countRequest = false } = {}) {
+      assertShape(UID, uid);
+      const t = new Date(now()).toISOString();
+      let doc;
+      for (let attempt = 0; attempt < 2; attempt++) {
+        try {
+          doc = unwrap(await users.findOneAndUpdate(
+            { _id: uid },
+            {
+              $set: { email: String(email).slice(0, 254), provider: String(provider).slice(0, 40), lastSeenAt: t },
+              $inc: { requests: countRequest ? 1 : 0 },
+              $setOnInsert: { createdAt: t, blocked: false },
+            },
+            { upsert: true, returnDocument: "after" }
+          ));
+          break;
+        } catch (e) {
+          if (e && e.code === 11000 && attempt === 0) continue; // two first sign-ins raced
+          throw e;
+        }
+      }
+      if (!doc) throw new Error("user upsert returned nothing");
+      return publicUser(doc);
+    },
+
+    async getUser(uid) {
+      assertShape(UID, uid);
+      const doc = await users.findOne({ _id: uid });
+      return doc ? publicUser(doc) : null;
+    },
+
+    async listUsers(limit) {
+      const n = Math.max(1, Math.min(Number(limit) | 0, 1000));
+      const docs = await users.find({}).sort({ lastSeenAt: -1 }).limit(n).toArray();
+      return docs.map(publicUser);
+    },
+
+    async userCounts() {
+      const [total, blocked] = await Promise.all([
+        users.countDocuments({}),
+        users.countDocuments({ blocked: true }),
+      ]);
+      return { total, blocked };
+    },
+
+    async setBlocked(uid, blocked) {
+      assertShape(UID, uid);
+      const doc = unwrap(await users.findOneAndUpdate(
+        { _id: uid },
+        { $set: { blocked: blocked === true } },
+        { returnDocument: "after" }
+      ));
+      return doc ? publicUser(doc) : null;
+    },
+
+    async getQuotaUsed(day) {
+      assertShape(DAY, day);
+      const doc = await quota.findOne({ _id: `quota:${day}` });
+      return doc && Number.isInteger(doc.used) ? doc.used : 0;
     },
 
     async takeQuota(day, n, limit) {

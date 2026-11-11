@@ -56,4 +56,52 @@ export function storeContract(test, name, make) {
       assert.equal(results.filter(Boolean).length, 10);
     } finally { await done(); }
   });
+
+  test(`${name}: users are created on first sight, updated after, and never unblocked by a visit`, async () => {
+    const { store, clock, done } = await make();
+    try {
+      const who = { uid: "user-1", email: "a@example.com", provider: "google.com" };
+      const first = await store.touchUser(who);
+      assert.equal(first.uid, "user-1");
+      assert.equal(first.blocked, false);
+      assert.equal(first.requests, 0);
+      assert.equal(await store.getUser("nobody"), null);
+
+      clock.t += 5000;
+      const counted = await store.touchUser({ ...who, email: "new@example.com" }, { countRequest: true });
+      assert.equal(counted.requests, 1);
+      assert.equal(counted.email, "new@example.com");
+      assert.equal(counted.createdAt, first.createdAt);
+      assert.ok(counted.lastSeenAt > first.lastSeenAt);
+
+      const blocked = await store.setBlocked("user-1", true);
+      assert.equal(blocked.blocked, true);
+      assert.equal((await store.touchUser(who)).blocked, true); // a visit does not clear the block
+      assert.equal((await store.setBlocked("user-1", false)).blocked, false);
+      assert.equal(await store.setBlocked("nobody", true), null);
+    } finally { await done(); }
+  });
+
+  test(`${name}: user list is newest-activity first, limited, and counted`, async () => {
+    const { store, clock, done } = await make();
+    try {
+      for (const id of ["u1", "u2", "u3"]) {
+        await store.touchUser({ uid: id, email: id + "@example.com", provider: "password" });
+        clock.t += 1000;
+      }
+      await store.setBlocked("u2", true);
+      const list = await store.listUsers(2);
+      assert.deepEqual(list.map((u) => u.uid), ["u3", "u2"]);
+      assert.deepEqual(await store.userCounts(), { total: 3, blocked: 1 });
+    } finally { await done(); }
+  });
+
+  test(`${name}: quota usage can be read`, async () => {
+    const { store, done } = await make();
+    try {
+      assert.equal(await store.getQuotaUsed("2026-11-04"), 0);
+      await store.takeQuota("2026-11-04", 3, 10);
+      assert.equal(await store.getQuotaUsed("2026-11-04"), 3);
+    } finally { await done(); }
+  });
 }

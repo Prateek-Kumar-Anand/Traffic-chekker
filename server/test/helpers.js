@@ -79,7 +79,7 @@ export async function start(over = {}, googleOpts = {}) {
   const clock = { t: Date.parse("2026-11-04T10:00:00Z") };
   const now = () => clock.t;
   const store = over.store || createMemoryStore({ now });
-  const google = over.google || fakeGoogle(googleOpts);
+  const google = over.google !== undefined ? over.google : fakeGoogle(googleOpts); // pass google: null to model "no Maps key"
   const logs = [];
   const config = makeConfig({ userRateLimitPerMin: 1000, userRateLimitPerHour: 10000, ...(over.config || {}) });
   const certFetches = { n: 0 };

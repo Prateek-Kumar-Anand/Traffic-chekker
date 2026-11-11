@@ -87,12 +87,13 @@ function defaultLog(entry) {
 class StoreError extends Error {}
 
 export function createServer({ config, store: rawStore, google, auth, now = Date.now, log = defaultLog }) {
-  const redact = (s) => String(s).split(config.googleKey).join("[redacted]");
+  // With no Google key configured there is nothing to redact (splitting on "" would mangle every message).
+  const redact = (s) => (config.googleKey ? String(s).split(config.googleKey).join("[redacted]") : String(s));
   const logSafe = (level, msg, extra = {}) => log({ level, msg: redact(msg), ...extra });
 
   // Every database call goes through this wrapper so any failure becomes a StoreError
   // (reported as 503, and Google is never called). Other exceptions stay ordinary 500s.
-  const store = Object.fromEntries(["getCache", "setCache", "hit", "takeQuota", "ping"].map((k) => [
+  const store = Object.fromEntries(["getCache", "setCache", "hit", "takeQuota", "ping", "touchUser", "getUser", "listUsers", "userCounts", "setBlocked", "getQuotaUsed"].map((k) => [
     k,
     async (...args) => {
       try { return await rawStore[k](...args); }
@@ -121,29 +122,53 @@ export function createServer({ config, store: rawStore, google, auth, now = Date
     return { value, cached: false };
   }
 
-  async function handleRoute(req, res, cors) {
-    // 1. Who is calling? Anonymous requests are refused before anything else is spent on them.
+  const UID_RE = /^[A-Za-z0-9_:.-]{1,128}$/;
+  const MAX_ADMIN_USERS = 200;
+  const API_NOT_CONNECTED = () => new HttpError(503, "api_not_connected", "API not connected at the backend.");
+  const isAdminEmail = (email) => config.adminEmails.includes(String(email).toLowerCase());
+
+  // Everything a signed-in call needs, in the order that keeps abuse cheap:
+  //   1. Verify the Firebase login (local crypto only; anonymous callers cost nothing else).
+  //   2. Rate limit per network address and per account.
+  //   3. Record who is calling and refuse blocked accounts (admins can never be locked out).
+  // scope "route" is the expensive traffic check; anything else uses the looser "misc" limits.
+  async function session(req, scope) {
     const bearer = /^Bearer ([A-Za-z0-9_.-]+)$/.exec(String(req.headers.authorization || ""));
     if (!bearer) throw new HttpError(401, "unauthorized", "Sign in to use this service.", { "WWW-Authenticate": "Bearer" });
     const user = await auth.verify(bearer[1]); // AuthError is mapped in mapError()
+    const isAdmin = isAdminEmail(user.email);
 
-    // 2. Rate limit, per network address and per account, so malformed and probing requests count too.
+    const route = scope === "route";
+    const perMin = route ? config.rateLimitPerMin : config.miscRateLimitPerMin;
+    const perHour = route ? config.rateLimitPerHour : config.miscRateLimitPerHour;
+    const uPerMin = route ? config.userRateLimitPerMin : config.miscRateLimitPerMin;
+    const uPerHour = route ? config.userRateLimitPerHour : config.miscRateLimitPerHour;
     const hmac = (v) => crypto.createHmac("sha256", config.ipHashSecret).update(v).digest("hex").slice(0, 32);
-    const ipId = hmac(clientKey(req, config.trustProxyHops));
-    const userId = hmac("uid:" + user.uid); // 32 hex like ipId; different HMAC input, so the two never collide
-    const [ipMin, ipHour, uMin, uHour] = await Promise.all([
-      store.hit(ipId, 60, config.rateLimitPerMin),
-      store.hit(ipId, 3600, config.rateLimitPerHour),
-      store.hit(userId, 60, config.userRateLimitPerMin),
-      store.hit(userId, 3600, config.userRateLimitPerHour),
+    const ipId = hmac((route ? "" : "misc:") + clientKey(req, config.trustProxyHops));
+    const userId = hmac((route ? "uid:" : "miscuid:") + user.uid); // 32 hex like ipId; the inputs differ, so ids never collide
+    const hits = await Promise.all([
+      store.hit(ipId, 60, perMin),
+      store.hit(ipId, 3600, perHour),
+      store.hit(userId, 60, uPerMin),
+      store.hit(userId, 3600, uPerHour),
     ]);
-    const hits = [ipMin, ipHour, uMin, uHour];
     if (hits.some((h) => !h.allowed)) {
       const wait = Math.max(...hits.map((h) => (h.allowed ? 0 : h.retryAfterSec)));
       throw new HttpError(429, "rate_limited", "Too many requests. Please wait a moment and try again.", { "Retry-After": String(wait) });
     }
 
-    // 3. Content type and body.
+    const record = await store.touchUser(user, { countRequest: route });
+    if (record.blocked && !isAdmin) {
+      throw new HttpError(403, "account_blocked", "Your account has been blocked. Contact the site administrator.");
+    }
+    return { user, record, isAdmin };
+  }
+
+  function requireAdmin(sess) {
+    if (!sess.isAdmin) throw new HttpError(403, "forbidden", "Only administrators can do this.");
+  }
+
+  async function readJson(req) {
     const mediaType = String(req.headers["content-type"] || "").split(";")[0].trim().toLowerCase();
     if (mediaType !== "application/json") throw new HttpError(415, "unsupported_media_type", "Send JSON.");
     const declared = Number(req.headers["content-length"]);
@@ -151,9 +176,74 @@ export function createServer({ config, store: rawStore, google, auth, now = Date
       throw new HttpError(413, "payload_too_large", "Request is too large.");
     }
     const raw = await readBody(req, MAX_BODY_BYTES);
-    let parsed;
-    try { parsed = JSON.parse(raw); }
+    try { return JSON.parse(raw); }
     catch { throw new HttpError(400, "invalid_json", "Request is not valid JSON."); }
+  }
+
+  // Endpoints that take no input still read (and bound) the body so the connection stays healthy.
+  const discardBody = (req) => readBody(req, MAX_BODY_BYTES);
+
+  // Who am I? The website calls this right after sign-in to learn the role and whether the Maps API is connected.
+  async function handleMe(req, res, cors) {
+    const sess = await session(req, "misc");
+    await discardBody(req);
+    send(res, 200, {
+      role: sess.isAdmin ? "admin" : "user",
+      email: sess.user.email,
+      mapsConnected: Boolean(google),
+    }, cors);
+  }
+
+  async function handleOverview(req, res, cors) {
+    const sess = await session(req, "misc");
+    requireAdmin(sess);
+    await discardBody(req);
+    const day = new Date(now()).toISOString().slice(0, 10);
+    const [used, users] = await Promise.all([store.getQuotaUsed(day), store.userCounts()]);
+    send(res, 200, {
+      api: { maps: Boolean(google), database: true }, // if the database were down, the calls above would have failed with 503
+      usage: { day, googleCallsToday: used, dailyLimit: config.dailyGoogleCallLimit },
+      users,
+      admins: config.adminEmails.length,
+    }, cors);
+  }
+
+  async function handleUsers(req, res, cors) {
+    const sess = await session(req, "misc");
+    requireAdmin(sess);
+    await discardBody(req);
+    const list = await store.listUsers(MAX_ADMIN_USERS + 1);
+    send(res, 200, {
+      users: list.slice(0, MAX_ADMIN_USERS).map((u) => ({ ...u, isAdmin: isAdminEmail(u.email) })),
+      truncated: list.length > MAX_ADMIN_USERS,
+    }, cors);
+  }
+
+  async function handleBlock(req, res, cors) {
+    const sess = await session(req, "misc");
+    requireAdmin(sess);
+    const body = await readJson(req);
+    const keys = body && typeof body === "object" && !Array.isArray(body) ? Object.keys(body) : [];
+    if (keys.length !== 2 || !keys.includes("uid") || !keys.includes("blocked") ||
+        typeof body.uid !== "string" || !UID_RE.test(body.uid) || typeof body.blocked !== "boolean") {
+      throw new HttpError(400, "invalid_request", "Send { uid, blocked }.");
+    }
+    const target = await store.getUser(body.uid);
+    if (!target) throw new HttpError(404, "not_found", "That person has not signed in yet.");
+    if (isAdminEmail(target.email) || target.uid === sess.user.uid) {
+      throw new HttpError(400, "cannot_block_admin", "Administrators cannot be blocked.");
+    }
+    const updated = await store.setBlocked(body.uid, body.blocked);
+    logSafe("info", body.blocked ? "admin blocked a user" : "admin unblocked a user", { actor: sess.user.uid, target: body.uid });
+    send(res, 200, { uid: body.uid, blocked: Boolean(updated && updated.blocked) }, cors);
+  }
+
+  async function handleRoute(req, res, cors) {
+    const sess = await session(req, "route");
+    if (!google) throw API_NOT_CONNECTED(); // no Maps key at the backend: say so plainly, spend nothing
+
+    // 3. Content type and body.
+    const parsed = await readJson(req);
 
     // 4. Strict validation.
     const v = validateBody(parsed, now());
@@ -226,7 +316,9 @@ export function createServer({ config, store: rawStore, google, auth, now = Date
         return new HttpError(404, "no_route", "Could not find a driving route between those places. Try adding the city name.");
       }
       if (err.kind === "upstream_auth") {
+        // A rejected key or switched-off billing means the Maps API is not usable: tell the website so.
         logSafe("error", "GOOGLE KEY OR BILLING PROBLEM: " + err.message);
+        return API_NOT_CONNECTED();
       } else {
         logSafe("warn", err.message);
       }
@@ -237,6 +329,14 @@ export function createServer({ config, store: rawStore, google, auth, now = Date
     logSafe("error", "unhandled: " + (err && err.stack ? err.stack : err));
     return new HttpError(500, "internal_error", "Something went wrong.");
   }
+
+  const ENDPOINTS = {
+    "/api/route": handleRoute,
+    "/api/me": handleMe,
+    "/api/admin/overview": handleOverview,
+    "/api/admin/users": handleUsers,
+    "/api/admin/block": handleBlock,
+  };
 
   async function handle(req, res) {
     let path;
@@ -249,7 +349,8 @@ export function createServer({ config, store: rawStore, google, auth, now = Date
       catch { return send(res, 503, { ok: false }); }
     }
 
-    if (path !== "/api/route") return send(res, 404, { error: "not_found" });
+    const handler = ENDPOINTS[path];
+    if (!handler) return send(res, 404, { error: "not_found" });
 
     // CORS allowlist: exact origin match, no wildcard, no credentials.
     // NOTE: CORS only controls which *browser pages* may read responses. It is not
@@ -278,7 +379,7 @@ export function createServer({ config, store: rawStore, google, auth, now = Date
     if (req.method !== "POST") return send(res, 405, { error: "method_not_allowed" }, { ...cors, Allow: "POST, OPTIONS" });
 
     try {
-      await handleRoute(req, res, cors);
+      await handler(req, res, cors);
     } catch (err) {
       const out = mapError(err);
       if (out.status === 413) res.once("finish", () => req.destroy());

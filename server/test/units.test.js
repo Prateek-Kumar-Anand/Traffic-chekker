@@ -15,7 +15,7 @@ const ENV = {
 };
 
 test("config: requires secrets and rejects weak or unsafe values", () => {
-  assert.throws(() => loadConfig({}), /GOOGLE_MAPS_API_KEY is required/);
+  assert.throws(() => loadConfig({}), /MONGODB_URI is required/);
   assert.throws(() => loadConfig({ ...ENV, IP_HASH_SECRET: "short" }), /at least 32/);
   assert.throws(() => loadConfig({ ...ENV, ALLOWED_ORIGINS: "*" }), /not allowed/);
   assert.throws(() => loadConfig({ ...ENV, ALLOWED_ORIGINS: "http://example.com" }), /https/);
@@ -29,6 +29,16 @@ test("config: requires secrets and rejects weak or unsafe values", () => {
   assert.equal(ok.requireOrigin, true);
   assert.equal(ok.trustProxyHops, 0);
   assert.ok(Object.isFrozen(ok));
+});
+
+test("config: the Maps key is optional, admins are parsed and validated", () => {
+  const { GOOGLE_MAPS_API_KEY, ...noKey } = ENV;
+  const c = loadConfig(noKey);
+  assert.equal(c.googleKey, "");
+  assert.deepEqual(c.adminEmails, []);
+  const a = loadConfig({ ...noKey, ADMIN_EMAILS: " Boss@Example.com , second@example.org ,," });
+  assert.deepEqual(a.adminEmails, ["boss@example.com", "second@example.org"]);
+  assert.throws(() => loadConfig({ ...noKey, ADMIN_EMAILS: "not-an-email" }), /ADMIN_EMAILS has an invalid email/);
 });
 
 test("config: error messages never echo secret values", () => {

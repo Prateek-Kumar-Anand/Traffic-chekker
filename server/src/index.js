@@ -21,7 +21,10 @@ try {
   process.exit(1);
 }
 
-const google = createGoogleClient({ apiKey: config.googleKey });
+// No Maps key is allowed: the backend still runs and answers "API not connected at the backend".
+const google = config.googleKey ? createGoogleClient({ apiKey: config.googleKey }) : null;
+if (!google) console.warn(JSON.stringify({ level: "warn", msg: "GOOGLE_MAPS_API_KEY is not set: API not connected. Traffic checks will be refused until it is added." }));
+if (!config.adminEmails.length) console.warn(JSON.stringify({ level: "warn", msg: "ADMIN_EMAILS is not set: nobody can open the admin console." }));
 const auth = createFirebaseVerifier({ projectId: config.firebaseProjectId });
 const server = createServer({ config, store, google, auth });
 
@@ -41,6 +44,6 @@ process.on("SIGINT", () => shutdown("SIGINT"));
 
 // Fail loudly so the host restarts a clean process rather than running in a broken state.
 process.on("unhandledRejection", (e) => {
-  console.error("unhandledRejection:", e && e.message ? e.message.split(config.googleKey).join("[redacted]") : "unknown");
+  console.error("unhandledRejection:", e && e.message ? (config.googleKey ? e.message.split(config.googleKey).join("[redacted]") : e.message) : "unknown");
   process.exit(1);
 });

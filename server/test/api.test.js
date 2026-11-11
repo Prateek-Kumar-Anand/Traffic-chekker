@@ -271,7 +271,7 @@ test("upstream errors never leak the key or internals", async () => {
 test("Google error kinds map to safe statuses", async () => {
   const cases = [
     ["no_route", 404, "no_route"],
-    ["upstream_auth", 502, "upstream_error"],
+    ["upstream_auth", 503, "api_not_connected"], // a rejected key or switched-off billing means the API is not connected
     ["upstream_busy", 503, "upstream_error"],
     ["upstream_error", 502, "upstream_error"],
   ];
